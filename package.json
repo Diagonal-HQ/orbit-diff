@@ -1,0 +1,22 @@
+{
+  "name": "diff-viewer",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "diffview": "./index.jsx"
+  },
+  "scripts": {
+    "start": "bun index.jsx",
+    "build": "bun build ./index.jsx --compile --outfile dist/diffview",
+    "install:local": "bun run build && mkdir -p \"$HOME/.local/bin\" && cp dist/diffview \"$HOME/.local/bin/diffview\" && echo \"installed diffview -> $HOME/.local/bin/diffview\""
+  },
+  "dependencies": {
+    "cli-highlight": "^2.1.11",
+    "ink": "^5.0.1",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "ink-testing-library": "^4.0.0",
+    "react-devtools-core": "^7.0.1"
+  }
+}
