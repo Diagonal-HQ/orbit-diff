@@ -33,4 +33,25 @@ await type("\x04");
 console.log("^d from files", statusL(), "| ▸files still focused:",
   strip(lastFrame()).includes("▸files"));
 
+// ---- Annotation flow: select a range, comment, review, copy ----
+stdin.write("\t"); await tick(); // focus diff
+await type("gjj");                // cursor to an early changed line
+await type("v");                  // start selection
+console.log("selecting    ", (strip(lastFrame()).match(/SEL \d+L/) || ["(no sel)"])[0]);
+await type("jj");                 // extend selection down
+await type("c");                  // open comment editor
+console.log("comment mode ", strip(lastFrame()).includes("New note") ? "editor open" : "(not open)");
+await type("please refactor this block");
+await type("\r");                 // save
+const marked = strip(lastFrame()).split("\n").some((l) => l.includes("●"));
+console.log("after save   ", statusL(), "| ● marker:", marked,
+  "| count:", (strip(lastFrame()).match(/\d+✎/) || ["0✎"])[0]);
+await type("a");                  // jump the rail cursor to the first annotation
+console.log("notes focus  ", strip(lastFrame()).includes("▸notes") ? "in notes section" : "(not focused)",
+  "| listed:", strip(lastFrame()).includes("Annotations (1)"));
+await type("\r");                 // enter jumps to the annotation in the diff
+console.log("after jump   ", statusL(), "| ▸diff:", strip(lastFrame()).includes("▸diff"));
+await type("y");                  // copy to clipboard (+ .orbit fallback)
+console.log("after copy   ", (strip(lastFrame()).match(/request.*clipboard|request.*\.orbit/) || ["(no toast)"])[0].slice(0, 50));
+
 process.exit(0);

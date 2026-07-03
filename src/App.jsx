@@ -1,11 +1,20 @@
 import React, { useMemo, useState } from "react";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { Box, Text, useApp, useInput } from "ink";
 import { Sidebar } from "./Sidebar.jsx";
 import { DiffPanel } from "./DiffPanel.jsx";
 import { useDimensions } from "./useDimensions.mjs";
+import { copyViaOSC52 } from "./clipboard.mjs";
+import { FALLBACK } from "./theme.mjs";
+import {
+  makeAnnotation,
+  annotationAt,
+  buildChangeRequest,
+} from "./annotations.mjs";
 
 // Modes: "normal" | "files" (filter sidebar) | "lines" (find in changed lines)
-export function App({ files, source }) {
+//        "comment" (type an annotation)
+export function App({ files, source, activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
@@ -20,6 +29,15 @@ export function App({ files, source }) {
   const [matchIdx, setMatchIdx] = useState(0);
   const [sideW, setSideW] = useState(null); // null = responsive default
   const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  // ---- Annotations (ephemeral, in-memory for this session) ----
+  const [annotations, setAnnotations] = useState([]);
+  const [selectAnchor, setSelectAnchor] = useState(null); // line idx or null (range start)
+  const [commentDraft, setCommentDraft] = useState("");
+  const [commentTarget, setCommentTarget] = useState(null); // {startIdx,endIdx,editingId}
+  const [railSection, setRailSection] = useState("files"); // sidebar focus: "files" | "annotations"
+  const [annSel, setAnnSel] = useState(0); // selected annotation index within the rail
+  const [toast, setToast] = useState(null); // transient status message
 
   const filtered = useMemo(() => filterFiles(files, fileQuery), [files, fileQuery]);
   const selectedFile = filtered[Math.min(selected, filtered.length - 1)];
@@ -36,6 +54,34 @@ export function App({ files, source }) {
     return set;
   }, [matches, selected]);
 
+  // Line indices of the focused file carrying an annotation (for gutter marks).
+  const annotatedLines = useMemo(() => {
+    const set = new Set();
+    if (!selectedFile) return set;
+    for (const a of annotations) {
+      if (a.file !== selectedFile.path) continue;
+      for (let i = a.startIdx; i <= a.endIdx; i++) set.add(i);
+    }
+    return set;
+  }, [annotations, selectedFile]);
+
+  // The live visual selection (anchor..cursor), or null when not selecting.
+  const selectionRange =
+    selectAnchor != null && selectedFile
+      ? { lo: Math.min(selectAnchor, cursor), hi: Math.max(selectAnchor, cursor) }
+      : null;
+
+  // Real-file line label for the note editor's title (e.g. "lines 42–48").
+  const commentLabel =
+    commentTarget && selectedFile
+      ? lineLabel(selectedFile, commentTarget.startIdx, commentTarget.endIdx)
+      : "";
+
+  // Which sidebar section the rail's cursor is in. Falls back to files whenever
+  // there are no annotations, so a stale "annotations" section can't strand you.
+  const activeSection = railSection === "annotations" && annotations.length > 0 ? "annotations" : "files";
+  const annCursor = clamp(annSel, 0, Math.max(0, annotations.length - 1));
+
   // The one match `n`/`N` currently points at — highlighted distinctly from the
   // rest so you can see which hit you're focused on. Null when it's off-screen
   // in another file.
@@ -48,7 +94,12 @@ export function App({ files, source }) {
   // then their value, always clamped so the diff keeps room even on resize.
   const sideMax = Math.max(20, cols - 24);
   const sidebarW = sidebarOpen ? clamp(sideW ?? Math.floor(cols * 0.32), 16, sideMax) : 0;
-  const diffW = cols - sidebarW;
+  // While typing a note, an editor takes over the left column so the diff on the
+  // right stays visible. It reuses the rail's width when the rail is open (no
+  // layout jump), else opens at a comfortable default with room to type.
+  const editorW = clamp(sideW ?? Math.floor(cols * 0.34), 28, sideMax);
+  const leftW = mode === "comment" ? editorW : sidebarW;
+  const diffW = cols - leftW;
   // Panels + status bar total rows-1, leaving one spare terminal row. Rendering
   // the *full* height makes the terminal scroll each frame, which drops Ink out
   // of its in-place-update path into a full erase/redraw — the scroll flicker.
@@ -62,6 +113,7 @@ export function App({ files, source }) {
     setSelected(next);
     setScroll(0);
     setCursor(0);
+    setSelectAnchor(null); // a range can't span files
   };
 
   // Move the current-line indicator and let the viewport follow it, keeping a
@@ -85,7 +137,142 @@ export function App({ files, source }) {
     setFocus("diff");
   };
 
+  // ---- Annotation actions ----
+
+  // Open the comment editor for the current selection, or the cursor line. On a
+  // line that already carries an annotation (and no active selection), edit it.
+  const startComment = () => {
+    if (!selectedFile || total === 0) return;
+    let startIdx = cursor;
+    let endIdx = cursor;
+    let editingId = null;
+    let draft = "";
+    if (selectAnchor != null) {
+      startIdx = Math.min(selectAnchor, cursor);
+      endIdx = Math.max(selectAnchor, cursor);
+    } else {
+      const existing = annotationAt(annotations, selectedFile.path, cursor);
+      if (existing) {
+        startIdx = existing.startIdx;
+        endIdx = existing.endIdx;
+        editingId = existing.id;
+        draft = existing.text;
+      }
+    }
+    setCommentTarget({ startIdx, endIdx, editingId });
+    setCommentDraft(draft);
+    setMode("comment");
+  };
+
+  const commitComment = () => {
+    const text = commentDraft.trim();
+    const t = commentTarget;
+    setMode("normal");
+    setCommentDraft("");
+    setCommentTarget(null);
+    setSelectAnchor(null);
+    if (!t || !selectedFile) return;
+    if (t.editingId != null) {
+      if (!text) {
+        setAnnotations((as) => as.filter((a) => a.id !== t.editingId));
+        setToast("annotation deleted");
+      } else {
+        setAnnotations((as) => as.map((a) => (a.id === t.editingId ? { ...a, text } : a)));
+        setToast("annotation updated");
+      }
+      return;
+    }
+    if (!text) return; // empty new comment: nothing to add
+    setAnnotations((as) => [...as, makeAnnotation(selectedFile.path, t.startIdx, t.endIdx, text)]);
+    const span = t.endIdx - t.startIdx + 1;
+    setToast(span > 1 ? `annotated ${span} lines` : "annotated line");
+  };
+
+  const deleteAtCursor = () => {
+    if (!selectedFile) return;
+    const existing = annotationAt(annotations, selectedFile.path, cursor);
+    if (!existing) return;
+    setAnnotations((as) => as.filter((a) => a.id !== existing.id));
+    setToast("annotation deleted");
+  };
+
+  const jumpToAnnotation = (ann) => {
+    if (!ann) return;
+    const fi = filtered.findIndex((f) => f.path === ann.file);
+    if (fi < 0) {
+      setToast("that file is filtered out");
+      return;
+    }
+    const t = filtered[fi].lines.length;
+    setSelected(fi);
+    setSelectAnchor(null);
+    setCursor(ann.startIdx);
+    setScroll(clamp(ann.startIdx - Math.floor(inner / 2), 0, Math.max(0, t - inner)));
+    setFocus("diff");
+  };
+
+  const deleteSelectedAnnotation = () => {
+    const ann = annotations[annCursor];
+    if (!ann) return;
+    setAnnotations((as) => as.filter((a) => a.id !== ann.id));
+    setAnnSel((s) => clamp(s, 0, Math.max(0, annotations.length - 2)));
+    setToast("annotation deleted");
+  };
+
+  // Assemble every annotation into a change-request doc, push it to the local
+  // clipboard via OSC 52, and always drop a copy at .orbit/change-request.md so
+  // there's a recoverable artifact even when the terminal ignores OSC 52.
+  const copyRequests = () => {
+    const withText = annotations.filter((a) => a.text.trim());
+    if (withText.length === 0) {
+      setToast("no annotations to copy");
+      return;
+    }
+    const doc = buildChangeRequest(annotations, files, source);
+    let copied = false;
+    let copyErr = null;
+    try {
+      copyViaOSC52(doc);
+      copied = true;
+    } catch (e) {
+      copyErr = e;
+    }
+    let wroteFile = false;
+    try {
+      const dir = `${process.cwd()}/.orbit`;
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(`${dir}/change-request.md`, doc);
+      wroteFile = true;
+    } catch {
+      // best-effort; the clipboard may still have it
+    }
+    const n = withText.length;
+    const label = `${n} request${n === 1 ? "" : "s"}`;
+    if (copied) {
+      setToast(`${label} → clipboard${wroteFile ? " (+ .orbit/change-request.md)" : ""}`);
+    } else if (wroteFile) {
+      setToast(`${label} → .orbit/change-request.md${copyErr ? ` (clipboard: ${copyErr.message})` : ""}`);
+    } else {
+      setToast(`could not copy: ${copyErr ? copyErr.message : "unknown error"}`);
+    }
+  };
+
   useInput((input, key) => {
+    // ---- Comment text entry ----
+    if (mode === "comment") {
+      if (key.escape) {
+        setMode("normal");
+        setCommentDraft("");
+        setCommentTarget(null);
+        setSelectAnchor(null);
+        return;
+      }
+      if (key.return) return commitComment();
+      if (key.backspace || key.delete) return setCommentDraft((d) => d.slice(0, -1));
+      if (input && !key.ctrl && !key.meta) setCommentDraft((d) => d + input);
+      return;
+    }
+
     // ---- Search input handling (files / lines) ----
     if (mode !== "normal") {
       const isFiles = mode === "files";
@@ -120,10 +307,12 @@ export function App({ files, source }) {
     }
 
     // ---- Normal mode ----
+    if (toast) setToast(null); // any action dismisses the last toast
     if (input === "q" || (key.ctrl && input === "c")) return exit();
-    // Esc clears an applied search/filter without reopening it — keeping you on
-    // the file you're viewing as the sidebar un-narrows.
+    // Esc cancels a live selection, else clears an applied search/filter without
+    // reopening it — keeping you on the file you're viewing as the rail un-narrows.
     if (key.escape) {
+      if (selectAnchor != null) return setSelectAnchor(null);
       if (!fileQuery && !lineQuery) return;
       const keep = selectedFile;
       setFileQuery("");
@@ -154,6 +343,29 @@ export function App({ files, source }) {
     if (input === "n") return jumpToMatch(matchIdx + 1);
     if (input === "N") return jumpToMatch(matchIdx - 1);
 
+    // ---- Annotation keys (operate on the cursor line / current selection) ----
+    if (input === "v") {
+      if (total === 0) return;
+      return setSelectAnchor((a) => (a == null ? cursor : null));
+    }
+    if (input === "c") return startComment();
+    if (input === "x") {
+      // In the rail's annotations section `x` deletes the highlighted note;
+      // elsewhere it deletes whatever note sits on the diff cursor line.
+      if (focus === "sidebar" && activeSection === "annotations") return deleteSelectedAnnotation();
+      return deleteAtCursor();
+    }
+    if (input === "a") {
+      // Jump the rail's cursor to the first annotation (no separate overlay).
+      if (annotations.length === 0) return setToast("no annotations yet");
+      setSidebarOpen(true);
+      setFocus("sidebar");
+      setRailSection("annotations");
+      setAnnSel(0);
+      return;
+    }
+    if (input === "y") return copyRequests();
+
     // Diff paging works from either pane, so you can skim a file's diff while
     // keeping the file rail focused for quick file switches.
     if (key.pageUp || (key.ctrl && input === "u")) return moveCursor(cursor - page);
@@ -162,9 +374,29 @@ export function App({ files, source }) {
     if (input === "G") return moveCursor(total - 1);
 
     // Line-granular ↑↓/jk are pane-sensitive: move files vs. move the cursor.
+    // In the rail they walk the files list, then flow down into the annotations
+    // list beneath it (and back up), so the whole rail is one continuous column.
     if (focus === "sidebar") {
+      if (activeSection === "annotations") {
+        if (key.upArrow || input === "k") {
+          if (annCursor > 0) return setAnnSel(annCursor - 1);
+          return setRailSection("files"); // cross back up into the file list
+        }
+        if (key.downArrow || input === "j") {
+          return setAnnSel(clamp(annCursor + 1, 0, annotations.length - 1));
+        }
+        if (key.return) return jumpToAnnotation(annotations[annCursor]);
+        return;
+      }
       if (key.upArrow || input === "k") return selectFile(selected - 1);
-      if (key.downArrow || input === "j") return selectFile(selected + 1);
+      if (key.downArrow || input === "j") {
+        if (selected < filtered.length - 1) return selectFile(selected + 1);
+        if (annotations.length > 0) {
+          setRailSection("annotations"); // cross down into the annotations list
+          return setAnnSel(0);
+        }
+        return;
+      }
       if (key.return) return setFocus("diff");
     } else {
       if (key.upArrow || input === "k") return moveCursor(cursor - 1);
@@ -175,25 +407,43 @@ export function App({ files, source }) {
   return (
     <Box flexDirection="column" width={cols} height={rows - 1}>
       <Box>
-        {sidebarOpen && (
-          <Sidebar
-            files={filtered}
-            selected={selected}
-            focused={focus === "sidebar" && mode !== "lines"}
-            width={sidebarW}
+        {mode === "comment" ? (
+          <CommentEditor
+            draft={commentDraft}
+            editing={commentTarget != null && commentTarget.editingId != null}
+            label={commentLabel}
+            width={leftW}
             height={bodyH}
           />
+        ) : (
+          sidebarOpen && (
+            <Sidebar
+              files={filtered}
+              selected={selected}
+              focused={focus === "sidebar" && mode !== "lines"}
+              width={sidebarW}
+              height={bodyH}
+              annotations={annotations}
+              allFiles={files}
+              section={activeSection}
+              annSelected={annCursor}
+            />
+          )
         )}
         <DiffPanel
           file={selectedFile}
           scroll={scroll}
-          focused={focus === "diff" && mode !== "files"}
+          focused={focus === "diff" && mode !== "files" && mode !== "comment"}
           width={diffW}
           height={bodyH}
           query={lineQuery}
           matchLines={matchLines}
           currentLine={currentLine}
           cursor={cursor}
+          annotatedLines={annotatedLines}
+          selectionRange={selectionRange}
+          activeBg={activeBg}
+          selectBg={selectBg}
         />
       </Box>
       <StatusBar
@@ -205,14 +455,22 @@ export function App({ files, source }) {
         matches={matches}
         matchIdx={matchIdx}
         focus={focus}
+        section={activeSection}
         line={cursor + 1}
         lineTotal={total}
+        annCount={annotations.length}
+        commentTarget={commentTarget}
+        selectionRange={selectionRange}
+        toast={toast}
       />
     </Box>
   );
 }
 
-function StatusBar({ mode, source, fileQuery, lineQuery, scope, matches, matchIdx, focus, line, lineTotal }) {
+function StatusBar({
+  mode, source, fileQuery, lineQuery, scope, matches, matchIdx, focus, section,
+  line, lineTotal, annCount, commentTarget, selectionRange, toast,
+}) {
   if (mode === "files") {
     return <Bar><Text color="cyan">filter files</Text> <Text>{fileQuery}</Text><Text inverse> </Text><Dim> · enter to apply · esc to clear</Dim></Bar>;
   }
@@ -221,19 +479,73 @@ function StatusBar({ mode, source, fileQuery, lineQuery, scope, matches, matchId
     const where = scope === "all" ? "whole diff" : "this file";
     return <Bar><Text color="magenta">find</Text> <Text>{lineQuery}</Text><Text inverse> </Text><Dim> · </Dim><Text color="yellow">{where}</Text><Dim> (tab) · {count} · enter jump · esc cancel</Dim></Bar>;
   }
+  if (mode === "comment") {
+    const editing = commentTarget && commentTarget.editingId != null;
+    return <Bar><Text color="green">{editing ? "editing note" : "typing note"}</Text><Dim> · type your change request in the panel · enter save{editing ? " · empty deletes" : ""} · esc cancel</Dim></Bar>;
+  }
+  if (toast) {
+    return <Bar><Text color="green">✓ </Text><Text>{toast}</Text></Bar>;
+  }
   const nav = matches.length
     ? ` · match ${((matchIdx % matches.length) + 1)}/${matches.length} (n/N)`
     : "";
+  const sel = selectionRange ? ` · SEL ${selectionRange.hi - selectionRange.lo + 1}L (c note)` : "";
+  const ann = annCount ? <><Text color="green">{annCount}✎</Text><Dim>/y copy · </Dim></> : null;
+  // In the rail's annotations section the row-level keys change: enter jumps to
+  // the note's diff location, x deletes it. Elsewhere they create notes.
+  const inNotes = focus === "sidebar" && section === "annotations";
+  const where = focus === "diff" ? "▸diff" : section === "annotations" ? "▸notes" : "▸files";
   return (
     <Bar>
       <Text color="cyan">L{line}</Text><Dim>/{lineTotal} · </Dim>
-      <Dim>{focus === "sidebar" ? "▸files" : "▸diff"} · tab · ↑↓/jk move · </Dim>
-      <Text color="cyan">s</Text><Dim> panel · </Dim>
-      <Text color="cyan">[ ]</Text><Dim> width · </Dim>
+      {ann}
+      <Dim>{where} · </Dim>
+      {inNotes ? (
+        <><Text color="green">enter</Text><Dim> jump · </Dim><Text color="green">x</Text><Dim> del · </Dim></>
+      ) : (
+        <><Text color="green">c</Text><Dim> note · </Dim><Text color="green">v</Text><Dim> sel · </Dim></>
+      )}
+      <Text color="green">a</Text><Dim> notes · </Dim>
       <Text color="cyan">/</Text><Dim> files · </Dim>
-      <Text color="magenta">f</Text><Dim> find · ^u/^d g/G scroll · q quit{nav} · {source}</Dim>
+      <Text color="magenta">f</Text><Dim> find · q quit{sel}{nav} · {source}</Dim>
     </Bar>
   );
+}
+
+// Left-column note editor (mode === "comment"), replacing the file rail so the
+// diff stays visible on the right. A block cursor trails the wrapped draft; the
+// hint pins to the bottom of the box.
+function CommentEditor({ draft, editing, label, width, height }) {
+  return (
+    <Box flexDirection="column" width={width} height={height} borderStyle="round" borderColor="green" paddingX={1}>
+      <Text bold color="green" wrap="truncate">
+        {editing ? "Edit note" : "New note"}
+        {label ? `  ${label}` : ""}
+      </Text>
+      <Box marginTop={1} flexGrow={1}>
+        <Text wrap="wrap">
+          {draft}
+          <Text inverse> </Text>
+        </Text>
+      </Box>
+      <Text dimColor wrap="truncate">enter save · {editing ? "empty deletes · " : ""}esc cancel</Text>
+    </Box>
+  );
+}
+
+// Real-file line-number label for an index range: "line 42" or "lines 42–48".
+// Prefers the new side; falls back to the old side for pure deletions.
+function lineLabel(file, startIdx, endIdx) {
+  let lo = null;
+  let hi = null;
+  for (let i = startIdx; i <= endIdx && i < file.lines.length; i++) {
+    const n = file.lines[i].newNum ?? file.lines[i].oldNum;
+    if (n == null) continue;
+    if (lo == null) lo = n;
+    hi = n;
+  }
+  if (lo == null) return "";
+  return lo === hi ? `line ${lo}` : `lines ${lo}–${hi}`;
 }
 
 const Bar = ({ children }) => (

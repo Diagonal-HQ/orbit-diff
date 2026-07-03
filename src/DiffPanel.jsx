@@ -9,17 +9,16 @@ const LINE_STYLE = {
   hunk: { sign: " ", color: "cyan", bg: undefined },
 };
 
-// Background tint for the current line. A parent Text's background shows through
-// the child fg colors (fg resets don't clear it), so the whole line — including
-// syntax-highlighted content — sits on this band.
-const ACTIVE_BG = "#3b4252";
-
 const pad = (used, width) => " ".repeat(Math.max(0, width - used));
 
 // Right pane: the unified diff of the selected file with a scroll window.
 // `scroll` is the first visible line; `cursor` is the current line (marked with
 // ▸); `matchLines` are search hits and `currentLine` is the focused one.
-export function DiffPanel({ file, scroll, cursor, focused, width, height, query, matchLines, currentLine }) {
+// `activeBg`/`selectBg` are subtle off-shades of the terminal background (see
+// theme.mjs). A parent Text's background shows through its child fg colors (fg
+// resets don't clear it), so the whole line — syntax-highlighted content and
+// all — sits on the band, filled to the edge by a trailing pad.
+export function DiffPanel({ file, scroll, cursor, focused, width, height, query, matchLines, currentLine, annotatedLines, selectionRange, activeBg, selectBg }) {
   const inner = Math.max(1, height - 3); // border (2) + title (1)
   const contentWidth = width - 2; // borders
 
@@ -44,15 +43,22 @@ export function DiffPanel({ file, scroll, cursor, focused, width, height, query,
       {visible.map((l, i) => {
         const idx = start + i;
         const onCursor = idx === cursor;
-        const bg = onCursor ? ACTIVE_BG : undefined;
+        const inSel = selectionRange && idx >= selectionRange.lo && idx <= selectionRange.hi;
+        const annotated = annotatedLines && annotatedLines.has(idx);
+        const bg = onCursor ? activeBg : inSel ? selectBg : undefined;
+        const fill = onCursor || inSel; // pad to width so the band spans the row
+        // Marker column: the cursor (▸) wins the cell; otherwise a ● flags an
+        // annotated line. An annotated line tints the marker green either way.
+        const marker = onCursor ? "▸" : annotated ? "●" : " ";
+        const markerColor = annotated ? "green" : "cyan";
         const st = LINE_STYLE[l.type] || LINE_STYLE.context;
 
         if (l.type === "hunk") {
           return (
             <Text key={idx} wrap="truncate" backgroundColor={bg}>
-              <Text color="cyan" bold>{onCursor ? "▸" : " "}</Text>
+              <Text color={markerColor} bold>{marker}</Text>
               <Text color="cyan">{l.content}</Text>
-              {onCursor && <Text>{pad(1 + [...l.content].length, rowW)}</Text>}
+              {fill && <Text>{pad(1 + [...l.content].length, rowW)}</Text>}
             </Text>
           );
         }
@@ -70,7 +76,7 @@ export function DiffPanel({ file, scroll, cursor, focused, width, height, query,
         const used = 1 + gutter.length + 1 + 1 + [...body].length; // marker+gutter+sp+sign+body
         return (
           <Text key={idx} wrap="truncate" backgroundColor={bg}>
-            <Text color="cyan" bold>{onCursor ? "▸" : " "}</Text>
+            <Text color={markerColor} bold>{marker}</Text>
             <Text dimColor={!onCursor} color={onCursor ? "cyan" : undefined}>{gutter} </Text>
             <Text color={st.color}>{st.sign}</Text>
             {isMatch ? (
@@ -88,7 +94,7 @@ export function DiffPanel({ file, scroll, cursor, focused, width, height, query,
             ) : (
               <Text color={st.color}>{body}</Text>
             )}
-            {onCursor && <Text>{pad(used, rowW)}</Text>}
+            {fill && <Text>{pad(used, rowW)}</Text>}
           </Text>
         );
       })}
