@@ -1,14 +1,14 @@
 {
-  "name": "diff-viewer",
+  "name": "orbit-diff",
   "private": true,
   "type": "module",
   "bin": {
-    "diffview": "./index.jsx"
+    "orbit-diff": "./index.jsx"
   },
   "scripts": {
     "start": "bun index.jsx",
-    "build": "bun build ./index.jsx --compile --outfile dist/diffview",
-    "install:local": "bun run build && mkdir -p \"$HOME/.local/bin\" && cp dist/diffview \"$HOME/.local/bin/diffview\" && echo \"installed diffview -> $HOME/.local/bin/diffview\""
+    "build": "bun build ./index.jsx --compile --outfile dist/orbit-diff",
+    "install:local": "bun run build && mkdir -p \"$HOME/.local/bin\" && cp dist/orbit-diff \"$HOME/.local/bin/orbit-diff\" && echo \"installed orbit-diff -> $HOME/.local/bin/orbit-diff\""
   },
   "dependencies": {
     "cli-highlight": "^2.1.11",

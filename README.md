@@ -1,11 +1,11 @@
-# diffview
+# orbit-diff
 
 A GitHub-style git diff viewer for the terminal, built with [Ink](https://github.com/vadimdemedes/ink) (React for CLIs). A prototype exploring how well a "web GUI mental model" — components, flexbox layout — holds up rendered to terminal cells.
 
 ## Run
 
 ```bash
-cd diff-viewer
+cd orbit-diff
 bun install
 
 bun index.jsx                 # uncommitted work vs HEAD
@@ -14,7 +14,7 @@ bun index.jsx main..feature   # a branch range, PR-style
 bun index.jsx HEAD~3 HEAD     # any args pass straight through to `git diff`
 ```
 
-## Install (get `diffview` on your PATH)
+## Install (get `orbit-diff` on your PATH)
 
 Two options.
 
@@ -24,32 +24,32 @@ your PATH and it runs on machines without Bun installed.
 
 ```bash
 bun install
-bun run install:local     # builds dist/diffview and copies it to ~/.local/bin/diffview
+bun run install:local     # builds dist/orbit-diff and copies it to ~/.local/bin/orbit-diff
 ```
 
 `install:local` targets `~/.local/bin` (already on most PATHs). To place it
 elsewhere, build and copy yourself:
 
 ```bash
-bun run build             # -> dist/diffview
-cp dist/diffview /usr/local/bin/   # or any dir on your PATH
+bun run build             # -> dist/orbit-diff
+cp dist/orbit-diff /usr/local/bin/   # or any dir on your PATH
 ```
 
 **2. `bun link` (dev symlink; needs Bun + this repo to stay put).** Uses the
-`bin` entry in `package.json` to symlink `diffview` into Bun's global bin. Fast,
+`bin` entry in `package.json` to symlink `orbit-diff` into Bun's global bin. Fast,
 always tracks your working copy, but breaks if you move/delete the repo.
 
 ```bash
 bun install
-bun link                  # registers diffview -> index.jsx
+bun link                  # registers orbit-diff -> index.jsx
 # ensure Bun's global bin is on PATH: export PATH="$HOME/.bun/bin:$PATH"
 ```
 
 Either way:
 
 ```bash
-diffview                  # uncommitted work vs HEAD
-diffview main..feature    # a branch range, PR-style
+orbit-diff                  # uncommitted work vs HEAD
+orbit-diff main..feature    # a branch range, PR-style
 ```
 
 ## Layout

@@ -16,14 +16,14 @@ let patch;
 try {
   patch = loadDiff(args);
 } catch (err) {
-  console.error(`diffview: ${err.message}`);
+  console.error(`orbit-diff: ${err.message}`);
   process.exit(1);
 }
 
 const files = parseDiff(patch);
 if (files.length === 0) {
   const what = args.length ? `git diff ${args.join(" ")}` : "outstanding branch changes";
-  console.error(`diffview: no ${args.length ? "changes for `" + what + "`" : what}`);
+  console.error(`orbit-diff: no ${args.length ? "changes for `" + what + "`" : what}`);
   process.exit(0);
 }
 
