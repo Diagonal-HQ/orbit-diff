@@ -31,9 +31,9 @@ url="https://github.com/$REPO/releases/latest/download/$asset"
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
-echo "Downloading $asset…"
+echo "Downloading ${asset}..."
 if command -v curl >/dev/null 2>&1; then
-  curl -fSL "$url" -o "$tmp"
+  curl -fL --progress-bar "$url" -o "$tmp"
 elif command -v wget >/dev/null 2>&1; then
   wget -qO "$tmp" "$url"
 else
