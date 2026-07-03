@@ -16,6 +16,11 @@ bun index.jsx HEAD~3 HEAD     # any args pass straight through to `git diff`
 
 ## Install (get `orbit-diff` on your PATH)
 
+Every push to `main` builds standalone binaries and publishes them to
+[Releases](../../releases) (tagged `v0.0.<run>`) for macOS arm64, Linux x64, and
+Linux arm64 — download the one for your platform, `chmod +x`, and drop it on your
+PATH. To build locally instead:
+
 Two options.
 
 **1. Standalone binary (no Bun needed to run it).** `bun build --compile` bundles
