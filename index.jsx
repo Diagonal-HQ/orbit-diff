@@ -40,7 +40,21 @@ if (files.length === 0) {
 }
 
 const source = args.length ? args.join(" ") : defaultSource();
-render(<App files={files} source={source} />, {
+
+// Ask the terminal for its background so the current-line / selection bands can
+// be a subtle off-shade of the actual theme (light or dark). Falls back to
+// dark-tuned defaults when the terminal doesn't answer. Runs before render so
+// stdin is free for the OSC 11 round-trip; Ink reclaims it afterward.
+const { detectLineColors } = await import("./src/theme.mjs");
+const { activeBg, selectBg } = await detectLineColors();
+
+const app = render(<App files={files} source={source} activeBg={activeBg} selectBg={selectBg} />, {
   exitOnCtrlC: true,
   stdout: inPlaceStdout(process.stdout),
 });
+
+// On quit, clear the viewer's final frame so you land back on a clean prompt
+// instead of the last diff frame left scrolled into the terminal. (2J clears the
+// screen, H homes the cursor; scrollback history is left intact.)
+await app.waitUntilExit();
+process.stdout.write("\x1b[2J\x1b[H");

@@ -92,8 +92,13 @@ orbit-diff main..feature    # a branch range, PR-style
 | `f` | find in diff contents — matches every line, context included |
 | `Tab` (while finding) | toggle search scope: **whole diff** ⇄ **focused file** |
 | `n` / `N` | next / previous match (jumps across files in whole-diff scope) |
+| `v` | start / cancel a multi-line selection (anchor at the cursor, extend with the cursor) |
+| `c` | comment on the selection (or the cursor line); on an already-annotated line, edit it |
+| `x` | delete the annotation on the cursor line (or the highlighted one in the rail's annotations list) |
+| `a` | jump the rail cursor to the annotations list (then `↑↓`/`j` `k` navigate, `Enter` jumps to it in the diff) |
+| `y` | copy all annotations to the clipboard as a change-request prompt for Claude Code |
 | `Enter` | rail → focus diff · find → jump to first match |
-| `Esc` | while typing: cancel the search · in normal mode: clear an applied filter/search |
+| `Esc` | while typing: cancel · selecting: cancel the selection · normal: clear an applied filter/search |
 | `q` / `Ctrl-c` | quit |
 
 Only the matched **substring** is highlighted (the rest of the line keeps its
@@ -103,6 +108,47 @@ the others.
 Syntax highlighting is by file extension via `cli-highlight` (highlight.js),
 emitted as ANSI that Ink renders directly. It's per-line, so multi-line
 constructs (block comments, template strings) may not carry state across lines.
+
+## Annotate → change requests for Claude Code
+
+Review a diff, leave comments on the lines you want changed, then hand the whole
+set off to [Claude Code](https://claude.com/claude-code) as a change-request
+prompt.
+
+- **Comment** — put the cursor on a line and press `c`, or select a block first
+  (`v`, move the cursor to extend, then `c`). Type your request and `Enter`.
+  Annotated lines carry a green `●` in the gutter. Press `c` again on an
+  annotated line to edit it (saving it empty deletes it), or `x` to delete.
+- **Review** — annotations are always listed beneath the file rail on the left.
+  Navigate down out of the file list (or press `a`) to move the rail cursor into
+  the annotations; `↑↓`/`j` `k` move between them, `Enter` jumps to one in the
+  diff, and `x` deletes the highlighted one.
+- **Copy** — press `y`. Every comment is assembled into a markdown prompt (each
+  request anchored to its real file line numbers, with the code snippet inline)
+  and copied to your clipboard. Paste it into Claude Code:
+
+  ```bash
+  claude    # then paste, or:  claude -p "$(cat .orbit/change-request.md)"
+  ```
+
+Annotations are **in-memory for the session** — they're gone when you quit, so
+copy before you leave.
+
+### Clipboard over SSH + tmux
+
+The copy uses **OSC 52**, a terminal escape sequence that sets the clipboard on
+the machine your *terminal emulator* runs on — so it works from a tmux session
+over SSH, where `pbcopy`/`xclip` would only reach the remote host. Two things to
+know:
+
+- **tmux** must allow it: add `set -g set-clipboard on` to your `~/.tmux.conf`.
+  orbit-diff wraps the sequence in tmux's (and GNU screen's) passthrough form
+  automatically.
+- **Terminal support varies.** iTerm2, kitty, WezTerm, Alacritty, and Windows
+  Terminal honor OSC 52; macOS **Terminal.app does not**, and there's no reply
+  to confirm success either way. So `y` **also** writes the prompt to
+  `.orbit/change-request.md` (gitignored) as a recoverable fallback —
+  `cat .orbit/change-request.md | claude -p` works regardless.
 
 ## Demo
 
@@ -119,3 +165,7 @@ to run interactively.
   marking what changed within a line — distinct from search highlighting).
 - Horizontal scroll isn't implemented; long lines truncate with `…`, which can
   also truncate the scroll-position indicator in the panel title for long paths.
+- The current-line / selection highlight is a subtle off-shade of your terminal
+  background, detected at startup via an OSC 11 query so it adapts to light and
+  dark themes. Terminals that don't answer (some over multiplexers) fall back to
+  a dark-tuned default after a brief timeout.
