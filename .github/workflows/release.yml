@@ -31,6 +31,9 @@ jobs:
         id: version
         run: echo "tag=v0.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
+      - name: Stamp version
+        run: echo "export const VERSION = \"${{ steps.version.outputs.tag }}\";" > src/version.mjs
+
       - name: Build binaries
         run: |
           set -euo pipefail

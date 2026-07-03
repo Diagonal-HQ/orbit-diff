@@ -16,10 +16,26 @@ bun index.jsx HEAD~3 HEAD     # any args pass straight through to `git diff`
 
 ## Install (get `orbit-diff` on your PATH)
 
-Every push to `main` builds standalone binaries and publishes them to
-[Releases](../../releases) (tagged `v0.0.<run>`) for macOS arm64, Linux x64, and
-Linux arm64 — download the one for your platform, `chmod +x`, and drop it on your
-PATH. To build locally instead:
+Fastest — the installer picks the right binary for your platform from the latest
+[Release](../../releases) and drops it in `~/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Diagonal-HQ/orbit-diff/main/install.sh | sh
+```
+
+Set `ORBIT_DIFF_BIN_DIR` to install elsewhere. Once installed, upgrade in place
+anytime:
+
+```bash
+orbit-diff update           # self-replaces with the latest release
+orbit-diff --version        # show the installed version
+```
+
+Binaries are published for macOS arm64, Linux x64, and Linux arm64 (built on
+every push to `main`, tagged `v0.0.<run>`). You can also grab one straight from
+the [Releases](../../releases) page, `chmod +x`, and drop it on your PATH.
+
+### Build locally instead
 
 Two options.
 

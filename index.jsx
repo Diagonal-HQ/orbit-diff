@@ -4,6 +4,7 @@ import { render } from "ink";
 import { loadDiff, parseDiff, defaultSource } from "./src/git.mjs";
 import { App } from "./src/App.jsx";
 import { inPlaceStdout } from "./src/inplace-stdout.mjs";
+import { VERSION } from "./src/version.mjs";
 
 // Everything after the script name is passed straight to `git diff`.
 //   bun index.jsx                 → all outstanding work on the branch
@@ -11,6 +12,17 @@ import { inPlaceStdout } from "./src/inplace-stdout.mjs";
 //   bun index.jsx --staged        → staged changes
 //   bun index.jsx main..feature   → a branch range (PR-style)
 const args = process.argv.slice(2);
+
+// Subcommands, checked before the rest is handed to `git diff`.
+if (args[0] === "update") {
+  const { runUpdate } = await import("./src/update.mjs");
+  await runUpdate();
+  process.exit(0);
+}
+if (args[0] === "--version" || args[0] === "-v" || args[0] === "version") {
+  console.log(VERSION);
+  process.exit(0);
+}
 
 let patch;
 try {
