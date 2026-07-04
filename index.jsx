@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import React from "react";
+import { spawnSync } from "node:child_process";
 import { render } from "ink";
 import { loadDiff, parseDiff, defaultSource } from "./src/git.mjs";
 import { App } from "./src/App.jsx";
@@ -48,13 +49,47 @@ const source = args.length ? args.join(" ") : defaultSource();
 const { detectLineColors } = await import("./src/theme.mjs");
 const { activeBg, selectBg } = await detectLineColors();
 
-const app = render(<App files={files} source={source} activeBg={activeBg} selectBg={selectBg} />, {
-  exitOnCtrlC: true,
-  stdout: inPlaceStdout(process.stdout),
-});
+// The review loop. render the viewer; when it exits, either the user quit (done)
+// or they pressed `r` to apply their annotations, leaving a change-request doc in
+// `handoff.doc`. In that case we hand the *bare* terminal to an interactive
+// `claude` session so they can watch it work and answer any questions, then
+// reload the diff and re-launch the viewer on the result.
+let current = files;
+while (true) {
+  const handoff = { doc: null };
+  const app = render(
+    <App files={current} source={source} handoff={handoff} activeBg={activeBg} selectBg={selectBg} />,
+    { exitOnCtrlC: true, stdout: inPlaceStdout(process.stdout) },
+  );
+  await app.waitUntilExit();
+  // Clear the viewer's final frame so nothing bleeds into what comes next.
+  process.stdout.write("\x1b[2J\x1b[H");
 
-// On quit, clear the viewer's final frame so you land back on a clean prompt
-// instead of the last diff frame left scrolled into the terminal. (2J clears the
-// screen, H homes the cursor; scrollback history is left intact.)
-await app.waitUntilExit();
-process.stdout.write("\x1b[2J\x1b[H");
+  if (!handoff.doc) break; // a plain quit — we're done
+
+  // Ink has released the terminal; give it to an interactive claude session.
+  // stdio "inherit" hands over the real TTY, so its window shows and it can
+  // prompt. The prompt is seeded as the first message; it also lives in
+  // .orbit/change-request.md. spawnSync blocks until the user exits claude.
+  console.log("\x1b[2morbit-diff → handing off to Claude Code (exit it to return)…\x1b[0m\n");
+  const res = spawnSync("claude", [handoff.doc], { stdio: "inherit" });
+  if (res.error) {
+    const why = res.error.code === "ENOENT" ? "`claude` not found on PATH" : res.error.message;
+    console.error(`\norbit-diff: couldn't launch Claude Code: ${why}`);
+    process.exit(1);
+  }
+
+  // Re-read the working tree Claude just edited.
+  let next;
+  try {
+    next = parseDiff(loadDiff(args));
+  } catch (err) {
+    console.error(`orbit-diff: reload failed: ${err.message}`);
+    process.exit(1);
+  }
+  if (next.length === 0) {
+    console.log("orbit-diff: no changes remain after applying — nothing left to review.");
+    break;
+  }
+  current = next; // loop back into the viewer on the fresh diff
+}
