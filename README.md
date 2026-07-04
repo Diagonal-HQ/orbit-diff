@@ -97,7 +97,7 @@ orbit-diff main..feature    # a branch range, PR-style
 | `x` | delete the annotation on the cursor line (or the highlighted one in the rail's annotations list) |
 | `a` | jump the rail cursor to the annotations list (then `↑↓`/`j` `k` navigate, `Enter` jumps to it in the diff) |
 | `y` | copy all annotations to the clipboard as a change-request prompt for Claude Code |
-| `r` | hand the change requests to an interactive Claude Code session; reload the diff when it exits |
+| `r` | open the **submit** picker: apply via Claude Code, post to the GitHub PR (when one exists), or copy |
 | `Enter` | rail → focus diff · find → jump to first match |
 | `Esc` | while typing: cancel · selecting: cancel the selection · normal: clear an applied filter/search |
 | `q` / `Ctrl-c` | quit |
@@ -112,10 +112,10 @@ constructs (block comments, template strings) may not carry state across lines.
 
 ## Annotate → change requests for Claude Code
 
-Review a diff, leave comments on the lines you want changed, then hand the whole
-set off to [Claude Code](https://claude.com/claude-code) as a change-request
-prompt — copy it out, or run it in place (`r`) and watch the diff reload with
-Claude's edits.
+Review a diff, leave comments on the lines you want changed, then press `r` to
+**submit** them — hand the whole set to [Claude Code](https://claude.com/claude-code)
+as a change-request prompt and watch the diff reload with Claude's edits, post
+them as inline comments on the branch's GitHub PR, or copy them out.
 
 - **Comment** — put the cursor on a line and press `c`, or select a block first
   (`v`, move the cursor to extend, then `c`). Type your request and `Enter`.
@@ -125,23 +125,34 @@ Claude's edits.
   Navigate down out of the file list (or press `a`) to move the rail cursor into
   the annotations; `↑↓`/`j` `k` move between them, `Enter` jumps to one in the
   diff, and `x` deletes the highlighted one.
-- **Copy** — press `y`. Every comment is assembled into a markdown prompt (each
-  request anchored to its real file line numbers, with the code snippet inline)
-  and copied to your clipboard. Paste it into Claude Code:
+- **Submit** — press `r` for a small picker with up to three targets (`↑↓` to
+  move, `Enter` to choose, `Esc` to cancel):
 
-  ```bash
-  claude    # then paste, or:  claude -p "$(cat .orbit/change-request.md)"
-  ```
+  - **Apply via Claude Code** — orbit-diff steps aside and hands the terminal to
+    a **real, interactive Claude Code session** seeded with your change-request
+    prompt — you see its full window, watch it work, answer any questions, and
+    approve tools exactly as you normally would. When you exit Claude (`/exit` or
+    Ctrl-D), orbit-diff **re-reads the working tree** and relaunches on the
+    updated diff — review → request → re-review in one flow. The annotations
+    don't survive the round-trip (their line anchors no longer point at the same
+    code once files change), so you land on a fresh diff to comment on again.
+    Requires the `claude` CLI on your `PATH`.
+  - **Post to GitHub PR** — shown only when the branch has an open PR (detected
+    via `gh`). Each annotation becomes an inline review comment anchored to its
+    file and line(s) on the PR head. Comments post independently, so an
+    annotation on a line that isn't part of the pushed PR diff (e.g. an
+    uncommitted local edit) is skipped and reported rather than sinking the rest.
+    Requires the `gh` CLI, authenticated, on your `PATH`.
+  - **Copy to clipboard** — every comment is assembled into a markdown prompt
+    (each request anchored to its real file line numbers, with the code snippet
+    inline) and copied to your clipboard, plus a copy at `.orbit/change-request.md`.
+    Paste it into Claude Code:
 
-- **Run it** — press `r` to close the loop. orbit-diff steps aside and hands the
-  terminal to a **real, interactive Claude Code session** seeded with your
-  change-request prompt — you see its full window, watch it work, answer any
-  questions, and approve tools exactly as you normally would. When you exit
-  Claude (`/exit` or Ctrl-D), orbit-diff **re-reads the working tree** and
-  relaunches on the updated diff — review → request → re-review in one flow. The
-  annotations don't survive the round-trip (their line anchors no longer point at
-  the same code once files change), so you land on a fresh diff to comment on
-  again. Requires the `claude` CLI on your `PATH`.
+    ```bash
+    claude    # then paste, or:  claude -p "$(cat .orbit/change-request.md)"
+    ```
+
+  `y` remains a direct shortcut for that last copy step, skipping the picker.
 
 Annotations are **in-memory for the session** — they're gone when you quit, so
 copy (or run) before you leave.

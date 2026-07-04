@@ -58,9 +58,13 @@ console.log("after jump   ", statusL(), "| ▸diff:", strip(lastFrame()).include
 await type("y");                  // copy to clipboard (+ .orbit fallback)
 console.log("after copy   ", (strip(lastFrame()).match(/request.*clipboard|request.*\.orbit/) || ["(no toast)"])[0].slice(0, 50));
 
-await type("r");                  // apply with Claude Code → hands off & exits
+await type("r");                  // open the submit-target picker
 await tick();
-console.log("after r       handoff doc set:", handoff.doc != null,
+console.log("submit menu  ", strip(lastFrame()).includes("Submit 1 annotation") ? "picker open" : "(not open)",
+  "| Claude row:", strip(lastFrame()).includes("Apply via Claude Code"));
+await type("\r");                 // pick the first row (Apply via Claude) → hands off & exits
+await tick();
+console.log("after choose  handoff doc set:", handoff.doc != null,
   "| has request:", (handoff.doc || "").includes("please refactor this block"));
 
 process.exit(0);

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { Box, Text, useApp, useInput } from "ink";
 import { Sidebar } from "./Sidebar.jsx";
@@ -6,6 +6,7 @@ import { DiffPanel } from "./DiffPanel.jsx";
 import { useDimensions } from "./useDimensions.mjs";
 import { copyViaOSC52 } from "./clipboard.mjs";
 import { FALLBACK } from "./theme.mjs";
+import { detectPR, submitAnnotations } from "./github.mjs";
 import {
   makeAnnotation,
   annotationAt,
@@ -13,7 +14,7 @@ import {
 } from "./annotations.mjs";
 
 // Modes: "normal" | "files" (filter sidebar) | "lines" (find in changed lines)
-//        "comment" (type an annotation)
+//        "comment" (type an annotation) | "submit" (choose where annotations go)
 export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
@@ -38,6 +39,24 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
   const [railSection, setRailSection] = useState("files"); // sidebar focus: "files" | "annotations"
   const [annSel, setAnnSel] = useState(0); // selected annotation index within the rail
   const [toast, setToast] = useState(null); // transient status message
+
+  // ---- Submit target picker ----
+  const [pr, setPr] = useState(null); // open PR for this branch, once detected
+  const [submitSel, setSubmitSel] = useState(0); // highlighted picker row
+  const [posting, setPosting] = useState(false); // a GitHub submit is in flight
+
+  // Look up the branch's PR once on mount so the picker can offer "post to PR"
+  // only when one actually exists. Best-effort and off the critical path — a
+  // missing `gh`, no PR, or a non-GitHub remote just leaves the option hidden.
+  useEffect(() => {
+    let live = true;
+    detectPR().then((found) => {
+      if (live) setPr(found);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const filtered = useMemo(() => filterFiles(files, fileQuery), [files, fileQuery]);
   const selectedFile = filtered[Math.min(selected, filtered.length - 1)];
@@ -98,7 +117,7 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
   // right stays visible. It reuses the rail's width when the rail is open (no
   // layout jump), else opens at a comfortable default with room to type.
   const editorW = clamp(sideW ?? Math.floor(cols * 0.34), 28, sideMax);
-  const leftW = mode === "comment" ? editorW : sidebarW;
+  const leftW = mode === "comment" || mode === "submit" ? editorW : sidebarW;
   const diffW = cols - leftW;
   // Panels + status bar total rows-1, leaving one spare terminal row. Rendering
   // the *full* height makes the terminal scroll each frame, which drops Ink out
@@ -284,7 +303,76 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
     exit();
   };
 
+  // The submit picker's rows. "Post to GitHub PR" only appears once a PR has
+  // been found for the branch — otherwise the option is simply absent.
+  const submitOptions = useMemo(() => {
+    const opts = [{ key: "claude", label: "Apply via Claude Code", hint: "hands off to an interactive session" }];
+    if (pr) {
+      opts.push({
+        key: "github",
+        label: `Post to GitHub PR #${pr.number}`,
+        hint: "inline review comments on the PR",
+      });
+    }
+    opts.push({ key: "clipboard", label: "Copy to clipboard", hint: "+ .orbit/change-request.md" });
+    return opts;
+  }, [pr]);
+
+  // Open the picker — but only when there's something to submit, matching the
+  // old direct-action behaviour of toasting on an empty set.
+  const openSubmit = () => {
+    if (posting) {
+      setToast("still posting to the PR…");
+      return;
+    }
+    const withText = annotations.filter((a) => a.text.trim());
+    if (withText.length === 0) {
+      setToast("no annotations to submit");
+      return;
+    }
+    setSubmitSel(0);
+    setMode("submit");
+  };
+
+  // Post the annotations to the PR as inline review comments. Outward-facing and
+  // hard to undo, so it only runs on an explicit pick in the submit menu. Async:
+  // we drop back to normal mode with a "posting…" toast, then report the tally.
+  const postToGitHub = () => {
+    if (!pr) return;
+    setMode("normal");
+    setPosting(true);
+    setToast(`posting to PR #${pr.number}…`);
+    submitAnnotations(pr, annotations, files)
+      .then(({ posted, skipped, failed, url }) => {
+        const parts = [`posted ${posted} comment${posted === 1 ? "" : "s"} → PR #${pr.number}`];
+        if (skipped) parts.push(`${skipped} unmappable`);
+        if (failed) parts.push(`${failed} rejected (line not on PR head?)`);
+        setToast(parts.join(" · "));
+      })
+      .catch((e) => setToast(`PR submit failed: ${e.message}`))
+      .finally(() => setPosting(false));
+  };
+
+  // Run whatever the picker's highlighted row is.
+  const chooseSubmit = () => {
+    const opt = submitOptions[clamp(submitSel, 0, submitOptions.length - 1)];
+    setMode("normal");
+    if (!opt) return;
+    if (opt.key === "claude") return runChangeRequest();
+    if (opt.key === "github") return postToGitHub();
+    if (opt.key === "clipboard") return copyRequests();
+  };
+
   useInput((input, key) => {
+    // ---- Submit target picker ----
+    if (mode === "submit") {
+      if (key.escape) return setMode("normal");
+      if (key.return) return chooseSubmit();
+      if (key.upArrow || input === "k") return setSubmitSel((s) => clamp(s - 1, 0, submitOptions.length - 1));
+      if (key.downArrow || input === "j") return setSubmitSel((s) => clamp(s + 1, 0, submitOptions.length - 1));
+      return;
+    }
+
     // ---- Comment text entry ----
     if (mode === "comment") {
       if (key.escape) {
@@ -392,7 +480,7 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
       return;
     }
     if (input === "y") return copyRequests();
-    if (input === "r") return runChangeRequest();
+    if (input === "r") return openSubmit();
 
     // Diff paging works from either pane, so you can skim a file's diff while
     // keeping the file rail focused for quick file switches.
@@ -443,6 +531,14 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
             width={leftW}
             height={bodyH}
           />
+        ) : mode === "submit" ? (
+          <SubmitMenu
+            options={submitOptions}
+            selected={clamp(submitSel, 0, submitOptions.length - 1)}
+            count={annotations.filter((a) => a.text.trim()).length}
+            width={leftW}
+            height={bodyH}
+          />
         ) : (
           sidebarOpen && (
             <Sidebar
@@ -461,7 +557,7 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
         <DiffPanel
           file={selectedFile}
           scroll={scroll}
-          focused={focus === "diff" && mode !== "files" && mode !== "comment"}
+          focused={focus === "diff" && mode !== "files" && mode !== "comment" && mode !== "submit"}
           width={diffW}
           height={bodyH}
           query={lineQuery}
@@ -511,6 +607,9 @@ function StatusBar({
     const editing = commentTarget && commentTarget.editingId != null;
     return <Bar><Text color="green">{editing ? "editing note" : "typing note"}</Text><Dim> · type your change request in the panel · enter save{editing ? " · empty deletes" : ""} · esc cancel</Dim></Bar>;
   }
+  if (mode === "submit") {
+    return <Bar><Text color="cyan">submit</Text><Dim> · choose a target in the panel · ↑↓ move · enter choose · esc cancel</Dim></Bar>;
+  }
   if (toast) {
     return <Bar><Text color="green">✓ </Text><Text>{toast}</Text></Bar>;
   }
@@ -518,7 +617,7 @@ function StatusBar({
     ? ` · match ${((matchIdx % matches.length) + 1)}/${matches.length} (n/N)`
     : "";
   const sel = selectionRange ? ` · SEL ${selectionRange.hi - selectionRange.lo + 1}L (c note)` : "";
-  const ann = annCount ? <><Text color="green">{annCount}✎</Text><Dim>/y copy·</Dim><Text color="yellow">r</Text><Dim> run · </Dim></> : null;
+  const ann = annCount ? <><Text color="green">{annCount}✎</Text><Dim> · </Dim><Text color="yellow">r</Text><Dim> submit · </Dim></> : null;
   // In the rail's annotations section the row-level keys change: enter jumps to
   // the note's diff location, x deletes it. Elsewhere they create notes.
   const inNotes = focus === "sidebar" && section === "annotations";
@@ -557,6 +656,34 @@ function CommentEditor({ draft, editing, label, width, height }) {
         </Text>
       </Box>
       <Text dimColor wrap="truncate">enter save · {editing ? "empty deletes · " : ""}esc cancel</Text>
+    </Box>
+  );
+}
+
+// Left-column picker (mode === "submit") for choosing where the annotations
+// go: apply via Claude, post to the GitHub PR (when one exists), or copy. The
+// diff stays visible on the right, mirroring the note editor's layout.
+function SubmitMenu({ options, selected, count, width, height }) {
+  return (
+    <Box flexDirection="column" width={width} height={height} borderStyle="round" borderColor="cyan" paddingX={1}>
+      <Text bold color="cyan" wrap="truncate">
+        Submit {count} annotation{count === 1 ? "" : "s"}
+      </Text>
+      <Box marginTop={1} flexDirection="column" flexGrow={1}>
+        {options.map((o, i) => {
+          const on = i === selected;
+          return (
+            <Box key={o.key} flexDirection="column" marginBottom={1}>
+              <Text color={on ? "cyan" : undefined} inverse={on} wrap="truncate">
+                {on ? "❯ " : "  "}
+                {o.label}
+              </Text>
+              <Text dimColor wrap="truncate">{"    " + o.hint}</Text>
+            </Box>
+          );
+        })}
+      </Box>
+      <Text dimColor wrap="truncate">↑↓ move · enter choose · esc cancel</Text>
     </Box>
   );
 }
