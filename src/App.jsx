@@ -14,7 +14,7 @@ import {
 
 // Modes: "normal" | "files" (filter sidebar) | "lines" (find in changed lines)
 //        "comment" (type an annotation)
-export function App({ files, source, activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg }) {
+export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
@@ -257,6 +257,33 @@ export function App({ files, source, activeBg = FALLBACK.activeBg, selectBg = FA
     }
   };
 
+  // Hand the whole annotation set to Claude Code so it can apply the edits, then
+  // reload the diff — the review loop closed without leaving orbit-diff. We can't
+  // do this in place: Ink owns the terminal, and an interactive `claude` needs it
+  // to show its window and ask you questions. So we stash the prompt and quit the
+  // viewer; index.jsx tears down Ink, runs `claude` on the bare terminal (you see
+  // its full session and answer normally), then re-launches the viewer on the
+  // reloaded diff. Annotations don't survive the round-trip — their line anchors
+  // no longer point at the same code once the files change.
+  const runChangeRequest = () => {
+    const withText = annotations.filter((a) => a.text.trim());
+    if (withText.length === 0) {
+      setToast("no annotations to run");
+      return;
+    }
+    const doc = buildChangeRequest(annotations, files, source);
+    // Also drop a copy on disk so there's a record of what was handed off.
+    try {
+      const dir = `${process.cwd()}/.orbit`;
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(`${dir}/change-request.md`, doc);
+    } catch {
+      // best-effort; the prompt still reaches Claude via the handoff
+    }
+    if (handoff) handoff.doc = doc; // index.jsx picks this up after we exit
+    exit();
+  };
+
   useInput((input, key) => {
     // ---- Comment text entry ----
     if (mode === "comment") {
@@ -365,6 +392,7 @@ export function App({ files, source, activeBg = FALLBACK.activeBg, selectBg = FA
       return;
     }
     if (input === "y") return copyRequests();
+    if (input === "r") return runChangeRequest();
 
     // Diff paging works from either pane, so you can skim a file's diff while
     // keeping the file rail focused for quick file switches.
@@ -490,7 +518,7 @@ function StatusBar({
     ? ` · match ${((matchIdx % matches.length) + 1)}/${matches.length} (n/N)`
     : "";
   const sel = selectionRange ? ` · SEL ${selectionRange.hi - selectionRange.lo + 1}L (c note)` : "";
-  const ann = annCount ? <><Text color="green">{annCount}✎</Text><Dim>/y copy · </Dim></> : null;
+  const ann = annCount ? <><Text color="green">{annCount}✎</Text><Dim>/y copy·</Dim><Text color="yellow">r</Text><Dim> run · </Dim></> : null;
   // In the rail's annotations section the row-level keys change: enter jumps to
   // the note's diff location, x deletes it. Elsewhere they create notes.
   const inNotes = focus === "sidebar" && section === "annotations";

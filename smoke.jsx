@@ -4,7 +4,11 @@ import { loadDiff, parseDiff } from "./src/git.mjs";
 import { App } from "./src/App.jsx";
 
 const files = parseDiff(loadDiff(["HEAD~3", "HEAD"]));
-const { lastFrame, stdin } = render(<App files={files} source="HEAD~3..HEAD" />);
+// `handoff` is how App signals `r` (apply with Claude Code): it stashes the
+// change-request doc here and exits, and index.jsx runs claude on it. We pass a
+// bag so the smoke test can assert the handoff fires without launching claude.
+const handoff = { doc: null };
+const { lastFrame, stdin } = render(<App files={files} source="HEAD~3..HEAD" handoff={handoff} />);
 
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const tick = () => new Promise((r) => setTimeout(r, 20));
@@ -53,5 +57,10 @@ await type("\r");                 // enter jumps to the annotation in the diff
 console.log("after jump   ", statusL(), "| ▸diff:", strip(lastFrame()).includes("▸diff"));
 await type("y");                  // copy to clipboard (+ .orbit fallback)
 console.log("after copy   ", (strip(lastFrame()).match(/request.*clipboard|request.*\.orbit/) || ["(no toast)"])[0].slice(0, 50));
+
+await type("r");                  // apply with Claude Code → hands off & exits
+await tick();
+console.log("after r       handoff doc set:", handoff.doc != null,
+  "| has request:", (handoff.doc || "").includes("please refactor this block"));
 
 process.exit(0);

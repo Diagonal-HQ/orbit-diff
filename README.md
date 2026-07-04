@@ -97,6 +97,7 @@ orbit-diff main..feature    # a branch range, PR-style
 | `x` | delete the annotation on the cursor line (or the highlighted one in the rail's annotations list) |
 | `a` | jump the rail cursor to the annotations list (then `↑↓`/`j` `k` navigate, `Enter` jumps to it in the diff) |
 | `y` | copy all annotations to the clipboard as a change-request prompt for Claude Code |
+| `r` | hand the change requests to an interactive Claude Code session; reload the diff when it exits |
 | `Enter` | rail → focus diff · find → jump to first match |
 | `Esc` | while typing: cancel · selecting: cancel the selection · normal: clear an applied filter/search |
 | `q` / `Ctrl-c` | quit |
@@ -113,7 +114,8 @@ constructs (block comments, template strings) may not carry state across lines.
 
 Review a diff, leave comments on the lines you want changed, then hand the whole
 set off to [Claude Code](https://claude.com/claude-code) as a change-request
-prompt.
+prompt — copy it out, or run it in place (`r`) and watch the diff reload with
+Claude's edits.
 
 - **Comment** — put the cursor on a line and press `c`, or select a block first
   (`v`, move the cursor to extend, then `c`). Type your request and `Enter`.
@@ -131,8 +133,18 @@ prompt.
   claude    # then paste, or:  claude -p "$(cat .orbit/change-request.md)"
   ```
 
+- **Run it** — press `r` to close the loop. orbit-diff steps aside and hands the
+  terminal to a **real, interactive Claude Code session** seeded with your
+  change-request prompt — you see its full window, watch it work, answer any
+  questions, and approve tools exactly as you normally would. When you exit
+  Claude (`/exit` or Ctrl-D), orbit-diff **re-reads the working tree** and
+  relaunches on the updated diff — review → request → re-review in one flow. The
+  annotations don't survive the round-trip (their line anchors no longer point at
+  the same code once files change), so you land on a fresh diff to comment on
+  again. Requires the `claude` CLI on your `PATH`.
+
 Annotations are **in-memory for the session** — they're gone when you quit, so
-copy before you leave.
+copy (or run) before you leave.
 
 ### Clipboard over SSH + tmux
 
