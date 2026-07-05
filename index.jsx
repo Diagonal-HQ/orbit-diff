@@ -69,8 +69,8 @@ while (true) {
 
   // Ink has released the terminal; give it to an interactive claude session.
   // stdio "inherit" hands over the real TTY, so its window shows and it can
-  // prompt. The prompt is seeded as the first message; it also lives in
-  // .orbit/change-request.md. spawnSync blocks until the user exits claude.
+  // prompt. The prompt is seeded as the first message; a copy is also saved under
+  // ~/.cache/orbit-diff/<repo>/<branch>/. spawnSync blocks until the user exits claude.
   console.log("\x1b[2morbit-diff → handing off to Claude Code (exit it to return)…\x1b[0m\n");
   const res = spawnSync("claude", [handoff.doc], { stdio: "inherit" });
   if (res.error) {

@@ -1,12 +1,17 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { Box, Text, useApp, useInput } from "ink";
+import { changeRequestPath, tildeify } from "./paths.mjs";
 import { Sidebar } from "./Sidebar.jsx";
 import { DiffPanel } from "./DiffPanel.jsx";
+import { ReviewPanel } from "./ReviewPanel.jsx";
+import { AskPanel } from "./AskPanel.jsx";
 import { useDimensions } from "./useDimensions.mjs";
 import { copyViaOSC52 } from "./clipboard.mjs";
 import { FALLBACK } from "./theme.mjs";
 import { detectPR, submitAnnotations } from "./github.mjs";
+import { findingToAnnotation } from "./ai/findings.mjs";
 import {
   makeAnnotation,
   annotationAt,
@@ -15,6 +20,7 @@ import {
 
 // Modes: "normal" | "files" (filter sidebar) | "lines" (find in changed lines)
 //        "comment" (type an annotation) | "submit" (choose where annotations go)
+//        "review" (AI findings panel) | "ask" (ask the model a question)
 export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
@@ -44,6 +50,20 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
   const [pr, setPr] = useState(null); // open PR for this branch, once detected
   const [submitSel, setSubmitSel] = useState(0); // highlighted picker row
   const [posting, setPosting] = useState(false); // a GitHub submit is in flight
+
+  // ---- AI reviewer + Q&A ----
+  const [findings, setFindings] = useState([]); // AI review findings across files
+  const [reviewSel, setReviewSel] = useState(0); // highlighted finding in the panel
+  const [reviewing, setReviewing] = useState(false); // a review pass is in flight
+  const [reviewProgress, setReviewProgress] = useState({ done: 0, total: 0 });
+  const [reviewError, setReviewError] = useState(null); // first error of the pass, shown in-panel
+  const [askDraft, setAskDraft] = useState(""); // question being typed / asked
+  const [askAnswer, setAskAnswer] = useState(""); // streamed answer text
+  const [askSent, setAskSent] = useState(false); // question submitted (input → answer view)
+  const [asking, setAsking] = useState(false); // an answer is streaming
+  const aiRef = useRef(null); // memoized { config, orchestrator, preflight } once loaded
+  const reviewToken = useRef(0); // guards stale async review callbacks
+  const askToken = useRef(0); // guards stale async ask callbacks
 
   // Look up the branch's PR once on mount so the picker can offer "post to PR"
   // only when one actually exists. Best-effort and off the critical path — a
@@ -117,7 +137,10 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
   // right stays visible. It reuses the rail's width when the rail is open (no
   // layout jump), else opens at a comfortable default with room to type.
   const editorW = clamp(sideW ?? Math.floor(cols * 0.34), 28, sideMax);
-  const leftW = mode === "comment" || mode === "submit" ? editorW : sidebarW;
+  // The AI panels (review list / streamed answer) want a bit more room to read.
+  const aiW = clamp(sideW ?? Math.floor(cols * 0.42), 34, sideMax);
+  const isAiPanel = mode === "review" || mode === "ask";
+  const leftW = mode === "comment" || mode === "submit" ? editorW : isAiPanel ? aiW : sidebarW;
   const diffW = cols - leftW;
   // Panels + status bar total rows-1, leaving one spare terminal row. Rendering
   // the *full* height makes the terminal scroll each frame, which drops Ink out
@@ -256,21 +279,21 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
     } catch (e) {
       copyErr = e;
     }
-    let wroteFile = false;
+    let savedPath = null;
     try {
-      const dir = `${process.cwd()}/.orbit`;
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(`${dir}/change-request.md`, doc);
-      wroteFile = true;
+      const path = changeRequestPath();
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, doc);
+      savedPath = tildeify(path);
     } catch {
       // best-effort; the clipboard may still have it
     }
     const n = withText.length;
     const label = `${n} request${n === 1 ? "" : "s"}`;
     if (copied) {
-      setToast(`${label} → clipboard${wroteFile ? " (+ .orbit/change-request.md)" : ""}`);
-    } else if (wroteFile) {
-      setToast(`${label} → .orbit/change-request.md${copyErr ? ` (clipboard: ${copyErr.message})` : ""}`);
+      setToast(`${label} → clipboard${savedPath ? ` (+ ${savedPath})` : ""}`);
+    } else if (savedPath) {
+      setToast(`${label} → ${savedPath}${copyErr ? ` (clipboard: ${copyErr.message})` : ""}`);
     } else {
       setToast(`could not copy: ${copyErr ? copyErr.message : "unknown error"}`);
     }
@@ -293,9 +316,9 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
     const doc = buildChangeRequest(annotations, files, source);
     // Also drop a copy on disk so there's a record of what was handed off.
     try {
-      const dir = `${process.cwd()}/.orbit`;
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(`${dir}/change-request.md`, doc);
+      const path = changeRequestPath();
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, doc);
     } catch {
       // best-effort; the prompt still reaches Claude via the handoff
     }
@@ -314,7 +337,7 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
         hint: "inline review comments on the PR",
       });
     }
-    opts.push({ key: "clipboard", label: "Copy to clipboard", hint: "+ .orbit/change-request.md" });
+    opts.push({ key: "clipboard", label: "Copy to clipboard", hint: "+ saved under ~/.cache/orbit-diff/" });
     return opts;
   }, [pr]);
 
@@ -363,6 +386,148 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
     if (opt.key === "clipboard") return copyRequests();
   };
 
+  // ---- AI actions ----
+
+  // Lazily import the AI subsystem (which pulls in the Pi SDK) and load config on
+  // first use, so the viewer starts fast and users without AI configured never pay
+  // the cost. Cached on aiRef for the rest of the session.
+  const loadAi = async () => {
+    if (aiRef.current) return aiRef.current;
+    try {
+      const [{ loadConfig }, orchestrator, client] = await Promise.all([
+        import("./ai/config.mjs"),
+        import("./ai/orchestrator.mjs"),
+        import("./ai/client.mjs"),
+      ]);
+      const config = await loadConfig();
+      aiRef.current = { config, orchestrator, preflight: client.preflight, warning: config.warning };
+      return aiRef.current;
+    } catch (e) {
+      return { error: `AI unavailable: ${e.message || e}` };
+    }
+  };
+
+  // Kick off an AI review of the whole diff. Per-file, cache-first, bounded
+  // concurrency; findings stream into the panel as each file completes. Async and
+  // non-blocking, mirroring the GitHub submit path.
+  const runAiReview = async () => {
+    if (reviewing) {
+      setMode("review");
+      return;
+    }
+    const ai = await loadAi();
+    if (ai.error) return setToast(ai.error);
+    const pf = await ai.preflight(ai.config);
+    if (!pf.ok) return setToast(pf.message);
+
+    const token = ++reviewToken.current;
+    let firstErr = null;
+    setFindings([]);
+    setReviewSel(0);
+    setReviewError(null);
+    setReviewing(true);
+    setReviewProgress({ done: 0, total: files.length });
+    setMode("review");
+    ai.orchestrator
+      .reviewFiles(files, ai.config, {
+        onFileDone: (file, fs, err) => {
+          if (token !== reviewToken.current) return;
+          if (fs && fs.length) setFindings((prev) => [...prev, ...fs]);
+          if (err && !firstErr) {
+            firstErr = err;
+            setReviewError(err); // surfaced in the panel (toasts are hidden in review mode)
+          }
+        },
+        onProgress: (done, total) => {
+          if (token !== reviewToken.current) return;
+          setReviewProgress({ done, total });
+        },
+      })
+      .then((all) => {
+        if (token !== reviewToken.current) return;
+        setReviewing(false);
+        setToast(all.length === 0 && firstErr ? `review failed: ${firstErr}` : `review complete · ${all.length} finding${all.length === 1 ? "" : "s"}`);
+      })
+      .catch((e) => {
+        if (token !== reviewToken.current) return;
+        setReviewing(false);
+        setReviewError(e.message || String(e));
+        setToast(`review failed: ${e.message || e}`);
+      });
+  };
+
+  // Move the diff cursor to a finding's location (leaves the review panel open so
+  // you can keep triaging). Reuses the annotation-jump scroll math.
+  const jumpToFinding = (f) => {
+    if (!f) return;
+    const fi = filtered.findIndex((x) => x.path === f.file);
+    if (fi < 0) return setToast("that file is filtered out");
+    const t = filtered[fi].lines.length;
+    const idx = f.anchored ? f.startIdx : 0;
+    setSelected(fi);
+    setSelectAnchor(null);
+    setCursor(idx);
+    setScroll(clamp(idx - Math.floor(inner / 2), 0, Math.max(0, t - inner)));
+  };
+
+  // Promote the highlighted finding into a real annotation, so the user controls
+  // exactly what feeds the submit pipelines (GitHub PR / apply / clipboard).
+  const promoteFinding = () => {
+    const f = findings[clamp(reviewSel, 0, Math.max(0, findings.length - 1))];
+    if (!f) return;
+    if (f.promoted) return setToast("already promoted");
+    if (!f.anchored) return setToast("finding has no line anchor to promote");
+    const file = files.find((x) => x.path === f.file);
+    const ann = file && findingToAnnotation(f, file);
+    if (!ann) return setToast("couldn't anchor finding");
+    setAnnotations((as) => [...as, ann]);
+    setFindings((fs) => fs.map((x) => (x.id === f.id ? { ...x, promoted: true } : x)));
+    setToast("finding → annotation (r to submit)");
+  };
+
+  const openAsk = () => {
+    setAskDraft("");
+    setAskAnswer("");
+    setAskSent(false);
+    setAsking(false);
+    setMode("ask");
+  };
+
+  // Send the typed question; stream the answer into the panel. Cache-first.
+  const sendAsk = async () => {
+    const q = askDraft.trim();
+    if (!q) return;
+    const ai = await loadAi();
+    if (ai.error) {
+      setMode("normal");
+      return setToast(ai.error);
+    }
+    const pf = await ai.preflight(ai.config);
+    if (!pf.ok) {
+      setMode("normal");
+      return setToast(pf.message);
+    }
+    const token = ++askToken.current;
+    setAskSent(true);
+    setAsking(true);
+    setAskAnswer("");
+    ai.orchestrator
+      .answerQuestion(q, files, selectedFile, ai.config, (delta) => {
+        if (token !== askToken.current) return;
+        setAskAnswer((a) => a + delta);
+      })
+      .then(({ cached }) => {
+        if (token !== askToken.current) return;
+        setAsking(false);
+        if (cached) setToast("answered from cache");
+      })
+      .catch((e) => {
+        if (token !== askToken.current) return;
+        setAsking(false);
+        setAskAnswer((a) => a + `\n\n[error: ${e.message || e}]`);
+      });
+  };
+
   useInput((input, key) => {
     // ---- Submit target picker ----
     if (mode === "submit") {
@@ -370,6 +535,33 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
       if (key.return) return chooseSubmit();
       if (key.upArrow || input === "k") return setSubmitSel((s) => clamp(s - 1, 0, submitOptions.length - 1));
       if (key.downArrow || input === "j") return setSubmitSel((s) => clamp(s + 1, 0, submitOptions.length - 1));
+      return;
+    }
+
+    // ---- AI review findings panel ----
+    if (mode === "review") {
+      if (key.escape) return setMode("normal");
+      if (findings.length === 0) return; // nothing to navigate yet
+      if (key.upArrow || input === "k") return setReviewSel((s) => clamp(s - 1, 0, findings.length - 1));
+      if (key.downArrow || input === "j") return setReviewSel((s) => clamp(s + 1, 0, findings.length - 1));
+      if (key.return) return jumpToFinding(findings[clamp(reviewSel, 0, findings.length - 1)]);
+      if (input === "p") return promoteFinding();
+      return;
+    }
+
+    // ---- Ask a question ----
+    if (mode === "ask") {
+      if (key.escape) {
+        askToken.current++; // ignore any in-flight answer deltas
+        return setMode("normal");
+      }
+      if (!askSent) {
+        if (key.return) return sendAsk();
+        if (key.backspace || key.delete) return setAskDraft((d) => d.slice(0, -1));
+        if (input && !key.ctrl && !key.meta) setAskDraft((d) => d + input);
+        return;
+      }
+      if (input === "?") return openAsk(); // ask another
       return;
     }
 
@@ -481,6 +673,8 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
     }
     if (input === "y") return copyRequests();
     if (input === "r") return openSubmit();
+    if (input === "A") return runAiReview();
+    if (input === "?") return openAsk();
 
     // Diff paging works from either pane, so you can skim a file's diff while
     // keeping the file rail focused for quick file switches.
@@ -539,6 +733,25 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
             width={leftW}
             height={bodyH}
           />
+        ) : mode === "review" ? (
+          <ReviewPanel
+            findings={findings}
+            selected={clamp(reviewSel, 0, Math.max(0, findings.length - 1))}
+            reviewing={reviewing}
+            progress={reviewProgress}
+            error={reviewError}
+            width={leftW}
+            height={bodyH}
+          />
+        ) : mode === "ask" ? (
+          <AskPanel
+            question={askDraft}
+            answer={askAnswer}
+            asking={asking}
+            sent={askSent}
+            width={leftW}
+            height={bodyH}
+          />
         ) : (
           sidebarOpen && (
             <Sidebar
@@ -557,7 +770,7 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
         <DiffPanel
           file={selectedFile}
           scroll={scroll}
-          focused={focus === "diff" && mode !== "files" && mode !== "comment" && mode !== "submit"}
+          focused={focus === "diff" && mode !== "files" && mode !== "comment" && mode !== "submit" && mode !== "review" && mode !== "ask"}
           width={diffW}
           height={bodyH}
           query={lineQuery}
@@ -610,6 +823,12 @@ function StatusBar({
   if (mode === "submit") {
     return <Bar><Text color="cyan">submit</Text><Dim> · choose a target in the panel · ↑↓ move · enter choose · esc cancel</Dim></Bar>;
   }
+  if (mode === "review") {
+    return <Bar><Text color="blueBright">AI review</Text><Dim> · ↑↓ move · enter jump · p promote · esc close</Dim></Bar>;
+  }
+  if (mode === "ask") {
+    return <Bar><Text color="blueBright">ask</Text><Dim> · type a question · enter ask · esc close</Dim></Bar>;
+  }
   if (toast) {
     return <Bar><Text color="green">✓ </Text><Text>{toast}</Text></Bar>;
   }
@@ -633,6 +852,8 @@ function StatusBar({
         <><Text color="green">c</Text><Dim> note · </Dim><Text color="green">v</Text><Dim> sel · </Dim></>
       )}
       <Text color="green">a</Text><Dim> notes · </Dim>
+      <Text color="blueBright">A</Text><Dim> ai · </Dim>
+      <Text color="blueBright">?</Text><Dim> ask · </Dim>
       <Text color="cyan">/</Text><Dim> files · </Dim>
       <Text color="magenta">f</Text><Dim> find · q quit{sel}{nav} · {source}</Dim>
     </Bar>

@@ -98,6 +98,8 @@ orbit-diff main..feature    # a branch range, PR-style
 | `a` | jump the rail cursor to the annotations list (then `↑↓`/`j` `k` navigate, `Enter` jumps to it in the diff) |
 | `y` | copy all annotations to the clipboard as a change-request prompt for Claude Code |
 | `r` | open the **submit** picker: apply via Claude Code, post to the GitHub PR (when one exists), or copy |
+| `A` | **AI review** of the diff — findings stream into a side panel (`↑↓`/`j` `k` move · `Enter` jump to it · `p` promote to an annotation · `Esc` close) |
+| `?` | **ask** the model a question about the diff / codebase — the answer streams into a panel (`Esc` close) |
 | `Enter` | rail → focus diff · find → jump to first match |
 | `Esc` | while typing: cancel · selecting: cancel the selection · normal: clear an applied filter/search |
 | `q` / `Ctrl-c` | quit |
@@ -109,6 +111,57 @@ the others.
 Syntax highlighting is by file extension via `cli-highlight` (highlight.js),
 emitted as ANSI that Ink renders directly. It's per-line, so multi-line
 constructs (block comments, template strings) may not carry state across lines.
+
+## AI review & Q&A
+
+orbit-diff can act as a reviewer assistant. Press `A` to have a model review the
+diff — it looks at each changed file and reports concrete findings (bugs,
+correctness, security, error handling, …), which stream into a side panel as they
+land. Navigate with `↑↓`/`j` `k`, `Enter` to jump the diff cursor to a finding, and
+`p` to **promote** a finding into a regular annotation — from there it flows through
+the normal submit pipelines (`r`): post to the GitHub PR, apply via Claude Code, or
+copy. You decide which findings become change requests.
+
+Press `?` to **ask a question** about the diff or the surrounding codebase. The
+model has read-only tools (read/grep/find/ls) so it can explore the repo to answer;
+it can never edit files or run commands.
+
+Results are **cached** outside the repo, under
+`~/.cache/orbit-diff/<repo>/<branch>/ai-cache/` (honours `$XDG_CACHE_HOME`), so
+nothing is written into the tree you're reviewing. Reviews are cached per file
+keyed by the file's diff content, so re-running a review only calls the model for
+files that actually changed — even across separate sessions. Answers to identical
+questions on an unchanged diff are served from cache too.
+
+### Configure the model & provider
+
+The backend is the [Pi SDK](https://pi.dev), so you choose the provider and model.
+Config lives at `~/.config/orbit-diff/config.js` (honours `$XDG_CONFIG_HOME`) — a
+user-global file, so it works with the installed binary and no repo directory:
+
+```bash
+mkdir -p ~/.config/orbit-diff
+$EDITOR ~/.config/orbit-diff/config.js
+```
+
+```js
+// ~/.config/orbit-diff/config.js
+export default {
+  provider: "anthropic",     // any Pi-supported provider (openai, google, groq, …)
+  model: "claude-opus-4-8",  // a model id Pi knows for that provider
+  thinkingLevel: "medium",   // off | minimal | low | medium | high | xhigh
+  review: { concurrency: 4 },
+};
+```
+
+It's a real ES module, so you can compute values — e.g. read an env var for a
+one-off override: `model: process.env.ORBIT_DIFF_MODEL ?? "claude-opus-4-8"`. If you
+have the repo, `orbit-diff.config.example.js` is a ready-to-copy template.
+
+**Credentials** are never stored in orbit-diff. Pi resolves them from its own env
+vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) or from `~/.pi/agent/auth.json` — set
+your provider's key env var, or run `pi` once and `/login`. If nothing is
+configured, `A`/`?` explain what's missing instead of failing silently.
 
 ## Annotate → change requests for Claude Code
 
@@ -145,11 +198,12 @@ them as inline comments on the branch's GitHub PR, or copy them out.
     Requires the `gh` CLI, authenticated, on your `PATH`.
   - **Copy to clipboard** — every comment is assembled into a markdown prompt
     (each request anchored to its real file line numbers, with the code snippet
-    inline) and copied to your clipboard, plus a copy at `.orbit/change-request.md`.
-    Paste it into Claude Code:
+    inline) and copied to your clipboard, plus a copy saved outside the repo under
+    `~/.cache/orbit-diff/<repo>/<branch>/change-request.md` (the exact path is shown
+    in the status bar). Paste it into Claude Code, or pipe the saved file:
 
     ```bash
-    claude    # then paste, or:  claude -p "$(cat .orbit/change-request.md)"
+    claude    # then paste, or:  claude -p "$(cat <path-shown-in-status-bar>)"
     ```
 
   `y` remains a direct shortcut for that last copy step, skipping the picker.
@@ -169,9 +223,9 @@ know:
   automatically.
 - **Terminal support varies.** iTerm2, kitty, WezTerm, Alacritty, and Windows
   Terminal honor OSC 52; macOS **Terminal.app does not**, and there's no reply
-  to confirm success either way. So `y` **also** writes the prompt to
-  `.orbit/change-request.md` (gitignored) as a recoverable fallback —
-  `cat .orbit/change-request.md | claude -p` works regardless.
+  to confirm success either way. So `y` **also** writes the prompt to a file under
+  `~/.cache/orbit-diff/` (the path is shown in the status bar) as a recoverable
+  fallback — piping that file into `claude -p` works regardless.
 
 ## Demo
 
