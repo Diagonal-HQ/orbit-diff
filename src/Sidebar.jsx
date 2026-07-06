@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { annotationLabel } from "./annotations.mjs";
+import { severityColor, findingLoc } from "./ai/findings.mjs";
 
 const STATUS_GLYPH = {
   added: { char: "A", color: "green" },
@@ -9,34 +10,52 @@ const STATUS_GLYPH = {
   modified: { char: "M", color: "yellow" },
 };
 
-// Left pane: the "Files changed" rail on top, with a live, navigable list of
-// annotations stacked beneath it (separated by a blank line). `files` is already
-// filtered by the file-search query; `allFiles` is the full set, used to resolve
-// annotation line labels even when the annotated file is filtered out above.
-// `section` says which list the rail cursor is in ("files" | "annotations") and
-// `annSelected` is the highlighted annotation index within it.
+// Left pane: three stacked, navigable sections — "Files changed" on top, then
+// annotations, then AI review findings — separated by blank rows. `files` is
+// already filtered by the file-search query; `allFiles` is the full set, used to
+// resolve annotation line labels even when the annotated file is filtered out.
+// `section` says which list the rail cursor is in ("files" | "annotations" |
+// "review"); `annSelected`/`reviewSelected` are the highlighted rows within them.
+// When the review section is focused, the selected finding's full body shows in a
+// detail box pinned to the bottom (there's no separate review panel anymore).
 export function Sidebar({
   files, selected, focused, width, height,
   annotations = [], allFiles = files, section = "files", annSelected = 0,
+  findings = [], reviewSelected = 0, reviewing = false,
+  reviewProgress = { done: 0, total: 0 }, reviewError = null,
 }) {
   const contentH = Math.max(1, height - 2); // rows inside the border
   const annCount = annotations.length;
+  const revCount = findings.length;
 
-  // Reserve a bounded section at the bottom for annotations (a header plus up to
-  // ~40% of the content). Chrome above the file list is always 3 rows: the files
-  // header, a blank spacer, and the annotations header. Files take the rest.
-  let annRows = 0;
-  if (annCount > 0) {
-    annRows = Math.min(annCount, Math.max(2, Math.floor((contentH - 3) * 0.4)));
-  }
-  const fileRows = Math.max(1, contentH - 3 - annRows);
+  const annFocused = focused && section === "annotations";
+  const reviewFocused = focused && section === "review";
+
+  // The detail box only appears while the review section holds the cursor and
+  // there's room — it borrows rows from the lists above it.
+  const cur = section === "review" ? findings[clamp(reviewSelected, 0, Math.max(0, revCount - 1))] : null;
+  const detailH = cur && contentH > 11 ? Math.min(5, contentH - 8) : 0;
+  const detailReserve = detailH ? detailH + 1 : 0;
+
+  // Chrome above the lists is always 5 rows: the files header, then a blank +
+  // header for each of the annotations and AI review sections. The three lists
+  // split what's left; annotations and review take a bounded share, files the rest.
+  const avail = Math.max(3, contentH - 5 - detailReserve);
+  const annRows = annCount > 0 ? Math.min(annCount, Math.max(2, Math.floor(avail * 0.28))) : 0;
+  const revRows = revCount > 0 ? Math.min(revCount, Math.max(2, Math.floor(avail * 0.28))) : 1;
+  const fileRows = Math.max(1, avail - annRows - revRows);
 
   // Each list windows around its own selection so it stays in view as it scrolls.
   const fStart = clampStart(selected, fileRows, files.length);
   const fWindow = files.slice(fStart, fStart + fileRows);
-  const annFocused = focused && section === "annotations";
   const aStart = clampStart(annSelected, annRows, annCount);
   const annWindow = annotations.slice(aStart, aStart + annRows);
+  const rStart = clampStart(reviewSelected, revRows, revCount);
+  const revWindow = findings.slice(rStart, rStart + revRows);
+
+  const reviewHeader = reviewing
+    ? `AI Review · ${reviewProgress.done}/${reviewProgress.total}`
+    : `AI Review (${revCount})`;
 
   return (
     <Box
@@ -86,6 +105,46 @@ export function Sidebar({
           </Text>
         );
       })}
+
+      <Text> </Text>
+      <Text bold color="blueBright">
+        {reviewHeader}
+      </Text>
+      {revWindow.map((f, i) => {
+        const idx = rStart + i;
+        const active = idx === reviewSelected;
+        const badge = f.severity[0].toUpperCase(); // H/M/L/I
+        return (
+          <Text key={f.id} inverse={active && reviewFocused} wrap="truncate">
+            <Text color={severityColor(f.severity)} bold>{badge} </Text>
+            <Text color="cyan">{findingLoc(f).replace(/^.*\//, "")}</Text>
+            <Text color={f.promoted ? "green" : undefined}>{f.promoted ? " ✓" : ""}</Text>
+            <Text dimColor>  {f.title}</Text>
+          </Text>
+        );
+      })}
+      {revCount === 0 &&
+        (reviewing ? (
+          <Text dimColor>reviewing…</Text>
+        ) : reviewError ? (
+          <Text color="red" wrap="truncate">{reviewError}</Text>
+        ) : (
+          <Text dimColor>press A to run</Text>
+        ))}
+
+      {detailH > 0 && cur && (
+        <Box flexDirection="column" height={detailH} marginTop={1}>
+          <Text bold color={severityColor(cur.severity)} wrap="truncate">
+            {cur.severity} · {findingLoc(cur)}
+          </Text>
+          <Text wrap="wrap">
+            {clip(cur.body || cur.title, Math.max(1, detailH - 2) * Math.max(1, width - 4))}
+          </Text>
+          <Text dimColor wrap="truncate">
+            {cur.promoted ? "promoted ✓" : cur.anchored ? "p promote → note" : "no line anchor"}
+          </Text>
+        </Box>
+      )}
     </Box>
   );
 }
@@ -100,4 +159,13 @@ function clampStart(selected, rows, count) {
 function truncateLeft(s, max) {
   if (s.length <= max) return s.padEnd(max);
   return "…" + s.slice(s.length - max + 1);
+}
+
+function clamp(n, lo, hi) {
+  return Math.max(lo, Math.min(n, hi));
+}
+
+function clip(s, max) {
+  if (!s) return "";
+  return s.length <= max ? s : s.slice(0, Math.max(0, max - 1)) + "…";
 }

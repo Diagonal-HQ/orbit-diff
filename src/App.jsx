@@ -5,22 +5,32 @@ import { Box, Text, useApp, useInput } from "ink";
 import { changeRequestPath, tildeify } from "./paths.mjs";
 import { Sidebar } from "./Sidebar.jsx";
 import { DiffPanel } from "./DiffPanel.jsx";
-import { ReviewPanel } from "./ReviewPanel.jsx";
 import { AskPanel } from "./AskPanel.jsx";
 import { useDimensions } from "./useDimensions.mjs";
 import { copyViaOSC52 } from "./clipboard.mjs";
 import { FALLBACK } from "./theme.mjs";
 import { detectPR, submitAnnotations } from "./github.mjs";
-import { findingToAnnotation } from "./ai/findings.mjs";
+import { findingToAnnotation, reserveFindingIds } from "./ai/findings.mjs";
 import {
   makeAnnotation,
   annotationAt,
   buildChangeRequest,
+  reserveAnnotationIds,
 } from "./annotations.mjs";
+import {
+  loadAnnotations,
+  saveAnnotations,
+  loadFindings,
+  saveFindings,
+  validAgainst,
+} from "./store.mjs";
+import { fileDigest } from "./ai/cache.mjs";
 
 // Modes: "normal" | "files" (filter sidebar) | "lines" (find in changed lines)
 //        "comment" (type an annotation) | "submit" (choose where annotations go)
-//        "review" (AI findings panel) | "ask" (ask the model a question)
+//        "reviewConfirm" (confirm kicking off an AI review) | "ask" (ask the model)
+// AI review findings are no longer a separate panel — they stream into the rail's
+// "AI Review" section (below Annotations) and navigate like everything else.
 export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg, addBg = FALLBACK.addBg, delBg = FALLBACK.delBg }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
@@ -40,8 +50,15 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
   const [sideW, setSideW] = useState(null); // null = responsive default
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
-  // ---- Annotations (ephemeral, in-memory for this session) ----
-  const [annotations, setAnnotations] = useState([]);
+  // ---- Annotations (persisted per repo/branch; restored on launch) ----
+  // Hydrate from disk, keeping only notes whose file is unchanged since they were
+  // written (the store validates by per-file digest). Reserve their ids so new
+  // notes don't collide with restored ones.
+  const [annotations, setAnnotations] = useState(() => {
+    const loaded = loadAnnotations(initialFiles);
+    reserveAnnotationIds(loaded);
+    return loaded;
+  });
   const [selectAnchor, setSelectAnchor] = useState(null); // line idx or null (range start)
   const [commentDraft, setCommentDraft] = useState("");
   const [commentTarget, setCommentTarget] = useState(null); // {startIdx,endIdx,editingId}
@@ -55,7 +72,13 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
   const [posting, setPosting] = useState(false); // a GitHub submit is in flight
 
   // ---- AI reviewer + Q&A ----
-  const [findings, setFindings] = useState([]); // AI review findings across files
+  // Findings persist too, so the AI Review section (and each finding's promoted
+  // state) comes back on launch without re-running. Same digest-based validation.
+  const [findings, setFindings] = useState(() => {
+    const loaded = loadFindings(initialFiles);
+    reserveFindingIds(loaded);
+    return loaded;
+  });
   const [reviewSel, setReviewSel] = useState(0); // highlighted finding in the panel
   const [reviewing, setReviewing] = useState(false); // a review pass is in flight
   const [reviewProgress, setReviewProgress] = useState({ done: 0, total: 0 });
@@ -80,6 +103,16 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
       live = false;
     };
   }, []);
+
+  // Persist the reviewer's work whenever it changes, so reopening the same diff
+  // restores it. Each item already carries its anchor-time file digest, so the
+  // store just writes them verbatim. Best-effort.
+  useEffect(() => {
+    saveAnnotations(annotations);
+  }, [annotations]);
+  useEffect(() => {
+    saveFindings(findings);
+  }, [findings]);
 
   const filtered = useMemo(() => filterFiles(files, fileQuery), [files, fileQuery]);
   const selectedFile = filtered[Math.min(selected, filtered.length - 1)];
@@ -120,9 +153,18 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
       : "";
 
   // Which sidebar section the rail's cursor is in. Falls back to files whenever
-  // there are no annotations, so a stale "annotations" section can't strand you.
-  const activeSection = railSection === "annotations" && annotations.length > 0 ? "annotations" : "files";
+  // the target section is empty, so a stale section can't strand you. The review
+  // section stays active while a pass is in flight even before findings land, so
+  // focus doesn't snap back to files as results stream in.
+  const reviewActive = findings.length > 0 || reviewing;
+  const activeSection =
+    railSection === "review" && reviewActive
+      ? "review"
+      : railSection === "annotations" && annotations.length > 0
+        ? "annotations"
+        : "files";
   const annCursor = clamp(annSel, 0, Math.max(0, annotations.length - 1));
+  const reviewCursor = clamp(reviewSel, 0, Math.max(0, findings.length - 1));
 
   // The one match `n`/`N` currently points at — highlighted distinctly from the
   // rest so you can see which hit you're focused on. Null when it's off-screen
@@ -140,9 +182,9 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
   // right stays visible. It reuses the rail's width when the rail is open (no
   // layout jump), else opens at a comfortable default with room to type.
   const editorW = clamp(sideW ?? Math.floor(cols * 0.34), 28, sideMax);
-  // The AI panels (review list / streamed answer) want a bit more room to read.
+  // The ask panel (streamed answer) wants a bit more room to read.
   const aiW = clamp(sideW ?? Math.floor(cols * 0.42), 34, sideMax);
-  const isAiPanel = mode === "review" || mode === "ask";
+  const isAiPanel = mode === "ask";
   const leftW = mode === "comment" || mode === "submit" ? editorW : isAiPanel ? aiW : sidebarW;
   const diffW = cols - leftW;
   // Panels + status bar total rows-1, leaving one spare terminal row. Rendering
@@ -228,7 +270,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
       return;
     }
     if (!text) return; // empty new comment: nothing to add
-    setAnnotations((as) => [...as, makeAnnotation(selectedFile.path, t.startIdx, t.endIdx, text)]);
+    setAnnotations((as) => [...as, makeAnnotation(selectedFile.path, t.startIdx, t.endIdx, text, fileDigest(selectedFile))]);
     const span = t.endIdx - t.startIdx + 1;
     setToast(span > 1 ? `annotated ${span} lines` : "annotated line");
   };
@@ -410,14 +452,30 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
     }
   };
 
+  // Move the rail's cursor into the AI Review section (opening the rail if needed).
+  const focusReviewSection = () => {
+    setSidebarOpen(true);
+    setFocus("sidebar");
+    setRailSection("review");
+    setReviewSel(0);
+  };
+
+  // The `A` action. A review already running or done just focuses the section
+  // (findings live in the rail now); otherwise we confirm before spending API
+  // calls. Re-running is confirming again while already parked in the section.
+  const handleAiReview = () => {
+    if (reviewing) return focusReviewSection();
+    const inReview = focus === "sidebar" && activeSection === "review";
+    if (!inReview && findings.length > 0) return focusReviewSection();
+    if (files.length === 0) return setToast("nothing to review");
+    setMode("reviewConfirm");
+  };
+
   // Kick off an AI review of the whole diff. Per-file, cache-first, bounded
-  // concurrency; findings stream into the panel as each file completes. Async and
-  // non-blocking, mirroring the GitHub submit path.
+  // concurrency; findings stream into the rail's AI Review section as each file
+  // completes. Async and non-blocking, mirroring the GitHub submit path.
   const runAiReview = async () => {
-    if (reviewing) {
-      setMode("review");
-      return;
-    }
+    if (reviewing) return focusReviewSection();
     const ai = await loadAi();
     if (ai.error) return setToast(ai.error);
     const pf = await ai.preflight(ai.config);
@@ -430,7 +488,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
     setReviewError(null);
     setReviewing(true);
     setReviewProgress({ done: 0, total: files.length });
-    setMode("review");
+    focusReviewSection();
     ai.orchestrator
       .reviewFiles(files, ai.config, {
         onFileDone: (file, fs, err) => {
@@ -459,8 +517,8 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
       });
   };
 
-  // Move the diff cursor to a finding's location (leaves the review panel open so
-  // you can keep triaging). Reuses the annotation-jump scroll math.
+  // Move the diff cursor to a finding's location and focus the diff, mirroring the
+  // annotation jump — from there tab returns to the rail and ctrl-d/u page the file.
   const jumpToFinding = (f) => {
     if (!f) return;
     const fi = filtered.findIndex((x) => x.path === f.file);
@@ -471,6 +529,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
     setSelectAnchor(null);
     setCursor(idx);
     setScroll(clamp(idx - Math.floor(inner / 2), 0, Math.max(0, t - inner)));
+    setFocus("diff");
   };
 
   // Promote the highlighted finding into a real annotation, so the user controls
@@ -513,7 +572,9 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
 
   // The chat just edited the working tree — re-parse the diff and swap it in so the
   // viewer reflects the new state. selectedFile clamps itself against the reloaded
-  // list; we reset the diff cursor/scroll since line indices may have moved.
+  // list; we reset the diff cursor/scroll since line indices may have moved. Any
+  // annotation or finding on an edited file is now mis-anchored, so we drop those
+  // (unchanged files keep theirs) — matching what a fresh launch would restore.
   const reloadAfterEdit = () => {
     if (!reloadDiff) return;
     let next;
@@ -523,6 +584,8 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
       return setToast(`reload failed: ${e.message || e}`);
     }
     setFiles(next);
+    setAnnotations((as) => validAgainst(as, next));
+    setFindings((fs) => validAgainst(fs, next));
     setCursor(0);
     setScroll(0);
     setToast(next.length === 0 ? "changes applied — nothing left to review" : "changes applied — diff reloaded");
@@ -578,14 +641,13 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
       return;
     }
 
-    // ---- AI review findings panel ----
-    if (mode === "review") {
-      if (key.escape) return setMode("normal");
-      if (findings.length === 0) return; // nothing to navigate yet
-      if (key.upArrow || input === "k") return setReviewSel((s) => clamp(s - 1, 0, findings.length - 1));
-      if (key.downArrow || input === "j") return setReviewSel((s) => clamp(s + 1, 0, findings.length - 1));
-      if (key.return) return jumpToFinding(findings[clamp(reviewSel, 0, findings.length - 1)]);
-      if (input === "p") return promoteFinding();
+    // ---- Confirm kicking off an AI review ----
+    if (mode === "reviewConfirm") {
+      if (key.escape || input === "n") return setMode("normal");
+      if (key.return || input === "y") {
+        setMode("normal");
+        return runAiReview();
+      }
       return;
     }
 
@@ -694,9 +756,17 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
     if (input === "c") return startComment();
     if (input === "x") {
       // In the rail's annotations section `x` deletes the highlighted note;
+      // in the AI Review section it's a no-op (findings aren't hand-managed);
       // elsewhere it deletes whatever note sits on the diff cursor line.
       if (focus === "sidebar" && activeSection === "annotations") return deleteSelectedAnnotation();
+      if (focus === "sidebar" && activeSection === "review") return;
       return deleteAtCursor();
+    }
+    // Promote the highlighted finding to a real annotation (only in the AI Review
+    // section — `p` is otherwise unbound).
+    if (input === "p") {
+      if (focus === "sidebar" && activeSection === "review") return promoteFinding();
+      return;
     }
     if (input === "a") {
       // Jump the rail's cursor to the first annotation (no separate overlay).
@@ -709,7 +779,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
     }
     if (input === "y") return copyRequests();
     if (input === "r") return openSubmit();
-    if (input === "A") return runAiReview();
+    if (input === "A") return handleAiReview();
     if (input === "?") return openAsk();
 
     // Diff paging works from either pane, so you can skim a file's diff while
@@ -720,16 +790,36 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
     if (input === "G") return moveCursor(total - 1);
 
     // Line-granular ↑↓/jk are pane-sensitive: move files vs. move the cursor.
-    // In the rail they walk the files list, then flow down into the annotations
-    // list beneath it (and back up), so the whole rail is one continuous column.
+    // In the rail they walk files → annotations → AI review as one continuous
+    // column, crossing between sections at each list's end (and back up).
     if (focus === "sidebar") {
+      if (activeSection === "review") {
+        if (key.upArrow || input === "k") {
+          if (reviewCursor > 0) return setReviewSel(reviewCursor - 1);
+          if (annotations.length > 0) {
+            setRailSection("annotations"); // cross up into the annotations list
+            return setAnnSel(annotations.length - 1);
+          }
+          return setRailSection("files"); // …or all the way back to files
+        }
+        if (key.downArrow || input === "j") {
+          return setReviewSel(clamp(reviewCursor + 1, 0, findings.length - 1));
+        }
+        if (key.return) return jumpToFinding(findings[reviewCursor]);
+        return;
+      }
       if (activeSection === "annotations") {
         if (key.upArrow || input === "k") {
           if (annCursor > 0) return setAnnSel(annCursor - 1);
           return setRailSection("files"); // cross back up into the file list
         }
         if (key.downArrow || input === "j") {
-          return setAnnSel(clamp(annCursor + 1, 0, annotations.length - 1));
+          if (annCursor < annotations.length - 1) return setAnnSel(annCursor + 1);
+          if (findings.length > 0) {
+            setRailSection("review"); // cross down into the AI review list
+            return setReviewSel(0);
+          }
+          return;
         }
         if (key.return) return jumpToAnnotation(annotations[annCursor]);
         return;
@@ -740,6 +830,10 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
         if (annotations.length > 0) {
           setRailSection("annotations"); // cross down into the annotations list
           return setAnnSel(0);
+        }
+        if (findings.length > 0) {
+          setRailSection("review"); // …or straight into AI review if no notes
+          return setReviewSel(0);
         }
         return;
       }
@@ -769,16 +863,6 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
             width={leftW}
             height={bodyH}
           />
-        ) : mode === "review" ? (
-          <ReviewPanel
-            findings={findings}
-            selected={clamp(reviewSel, 0, Math.max(0, findings.length - 1))}
-            reviewing={reviewing}
-            progress={reviewProgress}
-            error={reviewError}
-            width={leftW}
-            height={bodyH}
-          />
         ) : mode === "ask" ? (
           <AskPanel
             draft={askDraft}
@@ -799,13 +883,18 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
               allFiles={files}
               section={activeSection}
               annSelected={annCursor}
+              findings={findings}
+              reviewSelected={reviewCursor}
+              reviewing={reviewing}
+              reviewProgress={reviewProgress}
+              reviewError={reviewError}
             />
           )
         )}
         <DiffPanel
           file={selectedFile}
           scroll={scroll}
-          focused={focus === "diff" && mode !== "files" && mode !== "comment" && mode !== "submit" && mode !== "review" && mode !== "ask"}
+          focused={focus === "diff" && mode !== "files" && mode !== "comment" && mode !== "submit" && mode !== "ask"}
           width={diffW}
           height={bodyH}
           query={lineQuery}
@@ -833,6 +922,8 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
         line={cursor + 1}
         lineTotal={total}
         annCount={annotations.length}
+        reviewCount={findings.length}
+        fileCount={files.length}
         commentTarget={commentTarget}
         selectionRange={selectionRange}
         toast={toast}
@@ -843,7 +934,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
 
 function StatusBar({
   mode, source, fileQuery, lineQuery, scope, matches, matchIdx, focus, section,
-  line, lineTotal, annCount, commentTarget, selectionRange, toast,
+  line, lineTotal, annCount, reviewCount, fileCount, commentTarget, selectionRange, toast,
 }) {
   if (mode === "files") {
     return <Bar><Text color="cyan">filter files</Text> <Text>{fileQuery}</Text><Text inverse> </Text><Dim> · enter to apply · esc to clear</Dim></Bar>;
@@ -860,8 +951,9 @@ function StatusBar({
   if (mode === "submit") {
     return <Bar><Text color="cyan">submit</Text><Dim> · choose a target in the panel · ↑↓ move · enter choose · esc cancel</Dim></Bar>;
   }
-  if (mode === "review") {
-    return <Bar><Text color="blueBright">AI review</Text><Dim> · ↑↓ move · enter jump · p promote · esc close</Dim></Bar>;
+  if (mode === "reviewConfirm") {
+    const verb = reviewCount ? "Re-run" : "Run";
+    return <Bar><Text color="blueBright">AI review</Text><Dim> · {verb} over {fileCount} file{fileCount === 1 ? "" : "s"}? · </Dim><Text color="green">enter</Text><Dim> run · esc cancel</Dim></Bar>;
   }
   if (mode === "ask") {
     return <Bar><Text color="blueBright">chat</Text><Dim> · ask or request changes · enter send · esc close</Dim></Bar>;
@@ -874,16 +966,20 @@ function StatusBar({
     : "";
   const sel = selectionRange ? ` · SEL ${selectionRange.hi - selectionRange.lo + 1}L (c note)` : "";
   const ann = annCount ? <><Text color="green">{annCount}✎</Text><Dim> · </Dim><Text color="yellow">r</Text><Dim> submit · </Dim></> : null;
-  // In the rail's annotations section the row-level keys change: enter jumps to
-  // the note's diff location, x deletes it. Elsewhere they create notes.
+  // Row-level keys are section-sensitive. In the annotations section enter jumps
+  // to the note and x deletes it; in the AI review section enter jumps to the
+  // finding and p promotes it to a note; elsewhere the keys create notes.
   const inNotes = focus === "sidebar" && section === "annotations";
-  const where = focus === "diff" ? "▸diff" : section === "annotations" ? "▸notes" : "▸files";
+  const inReview = focus === "sidebar" && section === "review";
+  const where = focus === "diff" ? "▸diff" : section === "annotations" ? "▸notes" : section === "review" ? "▸review" : "▸files";
   return (
     <Bar>
       <Text color="cyan">L{line}</Text><Dim>/{lineTotal} · </Dim>
       {ann}
       <Dim>{where} · </Dim>
-      {inNotes ? (
+      {inReview ? (
+        <><Text color="green">enter</Text><Dim> jump · </Dim><Text color="green">p</Text><Dim> promote · </Dim></>
+      ) : inNotes ? (
         <><Text color="green">enter</Text><Dim> jump · </Dim><Text color="green">x</Text><Dim> del · </Dim></>
       ) : (
         <><Text color="green">c</Text><Dim> note · </Dim><Text color="green">v</Text><Dim> sel · </Dim></>

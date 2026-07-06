@@ -4,13 +4,16 @@
 
 import { makeAnnotation } from "../annotations.mjs";
 import { anchorFinding } from "./review.mjs";
+import { fileDigest } from "./cache.mjs";
 
 let nextId = 1;
 
 // Build display-ready findings for one file from the model's parsed output,
 // anchoring each to a line-index range. Unanchored findings are kept (still worth
-// reading) but can't be jumped to or promoted.
+// reading) but can't be jumped to or promoted. Each carries the file's digest at
+// review time so persistence can tell whether it still lines up on a later launch.
 export function makeFindings(file, raw) {
+  const digest = fileDigest(file);
   return raw.map((f) => {
     const anchor = anchorFinding(file, f);
     return {
@@ -26,8 +29,15 @@ export function makeFindings(file, raw) {
       endIdx: anchor ? anchor.endIdx : null,
       anchored: !!anchor,
       promoted: false,
+      digest,
     };
   });
+}
+
+// After restoring persisted findings, advance the id counter past them so a
+// freshly reviewed finding can't reuse a restored one's id.
+export function reserveFindingIds(findings) {
+  for (const f of findings) if (f && f.id >= nextId) nextId = f.id + 1;
 }
 
 // Turn a finding into an annotation anchored to the same diff lines. Returns the
@@ -36,7 +46,8 @@ export function makeFindings(file, raw) {
 export function findingToAnnotation(finding, file) {
   if (!finding.anchored || file.path !== finding.file) return null;
   const text = finding.body ? `${finding.title}\n\n${finding.body}` : finding.title;
-  return makeAnnotation(finding.file, finding.startIdx, finding.endIdx, text);
+  // Reuse the finding's anchor-time digest so the promoted note validates the same.
+  return makeAnnotation(finding.file, finding.startIdx, finding.endIdx, text, finding.digest);
 }
 
 // Ink color for a severity badge; also used to tint the finding row.

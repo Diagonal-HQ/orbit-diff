@@ -12,10 +12,19 @@ let nextId = 1;
 
 // Create an annotation over the inclusive index range [startIdx, endIdx] of the
 // given file path. Order-independent: callers may pass the range either way.
-export function makeAnnotation(file, aIdx, bIdx, text) {
+// `digest` is the file's content digest at anchor time; it lets persistence tell
+// whether the annotation still lines up with the file on a later launch.
+export function makeAnnotation(file, aIdx, bIdx, text, digest = null) {
   const startIdx = Math.min(aIdx, bIdx);
   const endIdx = Math.max(aIdx, bIdx);
-  return { id: nextId++, file, startIdx, endIdx, text };
+  return { id: nextId++, file, startIdx, endIdx, text, digest };
+}
+
+// After restoring persisted annotations, advance the id counter past them so a
+// newly created annotation can't reuse a restored one's id (which would collide
+// as a React key and confuse edit/delete-by-id).
+export function reserveAnnotationIds(annotations) {
+  for (const a of annotations) if (a && a.id >= nextId) nextId = a.id + 1;
 }
 
 // Does an annotation cover this line index of this file path?
