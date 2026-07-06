@@ -5,7 +5,7 @@
 // a handoff loop.
 
 import React from "react";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, openSync, closeSync } from "node:fs";
 import { render } from "ink";
 import { PrApp } from "./PrApp.jsx";
@@ -18,6 +18,16 @@ import { orbitDir } from "./paths.mjs";
 // Filesystem-safe slug for a branch name in a log filename.
 function slug(s) {
   return String(s).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "x";
+}
+
+// tmux window name for a worktree: its branch, else a short detached-HEAD tag,
+// else the leaf directory. Only used for display — windows are matched by path
+// (see `@orbit_wt` below), so this can collide or be renamed harmlessly.
+function windowName(wt) {
+  if (wt.branch) return wt.branch;
+  if (wt.head) return `det-${wt.head.slice(0, 7)}`;
+  const parts = String(wt.path).split("/").filter(Boolean);
+  return parts[parts.length - 1] || "worktree";
 }
 
 export async function runPrManager() {
@@ -68,8 +78,48 @@ export async function runPrManager() {
     }
   };
 
+  // Open a worktree in a tmux window: focus the existing window for this
+  // worktree if there is one, otherwise create a new one rooted at its path.
+  // Windows are tagged with the worktree path via the `@orbit_wt` window option
+  // (survives shell-driven automatic-rename and name collisions), so re-opening
+  // a worktree jumps back to its window instead of spawning a duplicate.
+  // Requires running inside tmux. Returns { ok, focused } / { ok:false, error }.
+  const openWorktree = (wt) => {
+    if (!wt || !wt.path) return { ok: false, error: "no worktree to open" };
+    if (wt.bare) return { ok: false, error: "can't open a bare worktree in tmux" };
+    if (!process.env.TMUX) return { ok: false, error: "not inside tmux — start tmux to open worktrees in windows" };
+    try {
+      const list = spawnSync("tmux", ["list-windows", "-F", "#{window_id}\t#{@orbit_wt}"], { encoding: "utf8" });
+      if (list.status === 0 && list.stdout) {
+        for (const line of list.stdout.split("\n")) {
+          const tab = line.indexOf("\t");
+          if (tab < 0) continue;
+          if (line.slice(tab + 1) === wt.path) {
+            spawnSync("tmux", ["select-window", "-t", line.slice(0, tab)]);
+            return { ok: true, focused: true };
+          }
+        }
+      }
+      // -P -F prints the new window's id; new-window also selects it (so the
+      // user lands in the new window). Tag it so a later open re-focuses it.
+      const created = spawnSync(
+        "tmux",
+        ["new-window", "-P", "-F", "#{window_id}", "-n", windowName(wt), "-c", wt.path],
+        { encoding: "utf8" },
+      );
+      if (created.status !== 0) {
+        return { ok: false, error: (created.stderr || "").trim() || "tmux new-window failed" };
+      }
+      const id = created.stdout.trim();
+      if (id) spawnSync("tmux", ["set-option", "-w", "-t", id, "@orbit_wt", wt.path]);
+      return { ok: true, focused: false };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  };
+
   const app = render(
-    <PrApp loadPRs={listReviewPRs} loadWorktrees={listWorktrees} runPr={runPr} openUrl={openUrl} config={config} />,
+    <PrApp loadPRs={listReviewPRs} loadWorktrees={listWorktrees} runPr={runPr} openUrl={openUrl} openWorktree={openWorktree} config={config} />,
     { exitOnCtrlC: true, stdout: inPlaceStdout(process.stdout) },
   );
   await app.waitUntilExit();

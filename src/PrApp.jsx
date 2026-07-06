@@ -16,9 +16,11 @@ import { tildeify } from "./paths.mjs";
 // (`d`) runs the configured `pr.start` / `pr.done` command in the background
 // (via the `runPr` callback) — it does NOT take over the terminal — and a toast
 // reports where its output is logged. `o` opens the PR in the browser, `tab`
-// moves focus between the PR list and the worktrees pane (where `d` runs
-// `pr.done` against the selected worktree), and `/` filters the list.
-export function PrApp({ loadPRs, loadWorktrees, runPr, openUrl, config }) {
+// moves focus between the PR list and the worktrees pane (where `enter` opens
+// the worktree in a tmux window — focusing an existing one if it's already
+// open — `o` opens its PR in the browser, and `d` runs `pr.done` against it),
+// and `/` filters the list.
+export function PrApp({ loadPRs, loadWorktrees, runPr, openUrl, openWorktree, config }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
@@ -161,6 +163,26 @@ export function PrApp({ loadPRs, loadWorktrees, runPr, openUrl, config }) {
     run("done", target, label);
   };
 
+  // `enter` on a worktree opens it in a tmux window (or focuses the existing
+  // one). The heavy lifting lives in the `openWorktree` callback; here we just
+  // toast the outcome.
+  const openWorktreeWindow = (wt) => {
+    if (!wt) return;
+    const res = openWorktree(wt);
+    if (!res.ok) return setToast(res.error);
+    const label = wt.branch || tildeify(wt.path) || "worktree";
+    setToast(res.focused ? `⧉ focused ${label}` : `⧉ opened ${label} in a tmux window`);
+  };
+
+  // `o` on a worktree opens the matching PR in the browser (matched by branch).
+  const openWorktreePr = (wt) => {
+    if (!wt) return;
+    const prNum = wt.branch ? prByBranch.get(wt.branch) : undefined;
+    const matched = prNum ? all.find((p) => p.number === prNum) : null;
+    if (!matched) return setToast(wt.branch ? `no open PR for ${wt.branch}` : "no PR for this worktree");
+    openInBrowser(matched);
+  };
+
   useInput((input, key) => {
     // ---- Search mode: capture typing into the filter ----
     if (mode === "search") {
@@ -201,6 +223,8 @@ export function PrApp({ loadPRs, loadWorktrees, runPr, openUrl, config }) {
       if (key.upArrow || input === "k") return setSelectedWt((s) => clampIdx(s - 1, worktrees.length));
       if (input === "g") return setSelectedWt(0);
       if (input === "G") return setSelectedWt(worktrees.length - 1);
+      if (key.return) return openWorktreeWindow(worktrees[wtSel]);
+      if (input === "o") return openWorktreePr(worktrees[wtSel]);
       if (input === "d") return runWorktreeDone(worktrees[wtSel]);
       return;
     }
@@ -536,7 +560,9 @@ function StatusBar({ toast, focus, startSet, doneSet, startCmd }) {
   // done on the worktrees pane.
   const actions =
     focus === "worktrees" ? (
-      <><Text bold>d</Text> {doneSet ? "done" : <Text dimColor>done (unset)</Text>}</>
+      <>
+        <Text bold>enter</Text> tmux  <Text bold>o</Text> open  <Text bold>d</Text> {doneSet ? "done" : <Text dimColor>done (unset)</Text>}
+      </>
     ) : (
       <>
         <Text bold>enter</Text> {startSet ? "start" : <Text dimColor>start (unset)</Text>}  <Text bold>o</Text> open
