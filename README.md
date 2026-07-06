@@ -30,6 +30,7 @@ anytime:
 orbit-diff update           # self-replaces with the latest release
 orbit-diff --version        # show the installed version
 orbit-diff init             # write a starter config (--force to overwrite)
+orbit-diff prs              # manage the PRs assigned to / awaiting you
 ```
 
 Binaries are published for macOS arm64, Linux x64, and Linux arm64 (built on
@@ -112,6 +113,58 @@ the others.
 Syntax highlighting is by file extension via `cli-highlight` (highlight.js),
 emitted as ANSI that Ink renders directly. It's per-line, so multi-line
 constructs (block comments, template strings) may not carry state across lines.
+
+## Manage PRs (`orbit-diff prs`)
+
+A second mode that turns orbit-diff into a lightweight PR manager for the
+**current repo**. It lists the open, non-draft PRs that are either assigned to
+you or awaiting your review, and lets you drive a configured command against the
+one you pick.
+
+```bash
+orbit-diff prs              # (alias: orbit-diff pr)
+```
+
+- **Top panel** — a full-width list of the PRs waiting on you, each with a
+  review-state glyph (`✓` approved · `✗` changes requested · `●` review required ·
+  `○` no reviews).
+- **Bottom-left** — an overview of the highlighted PR: review decision,
+  mergeability, diff size, labels, and the description.
+- **Bottom-right** — who's on the hook: requested reviewers, assignees, and the
+  per-check status rollup (failing/pending first).
+
+The list loads asynchronously, so the shell paints immediately and the PRs
+stream in when `gh` answers.
+
+| Key | Action |
+| --- | --- |
+| `↑↓` / `j` `k` | move · `g` / `G` jump to top / bottom |
+| `Enter` / `o` | **start** — run your `pr.start` command for this PR |
+| `d` | **done** — run your `pr.done` command for this PR |
+| `r` | refresh the list |
+| `q` / `Esc` / `Ctrl-c` | quit |
+
+`start` and `done` hand the terminal over to the command (like the Claude
+handoff below), so it can prompt, open an editor, or drop you into a session;
+when it exits you're back in the list on a freshly-reloaded set of PRs.
+
+Configure the two commands in `~/.config/orbit-diff/config.js`. The tokens
+`{branch}` `{base}` `{number}` `{repo}` `{title}` `{url}` are substituted
+(shell-quoted), and the command runs in your login shell so aliases/functions
+resolve:
+
+```js
+export default {
+  // …model/provider settings…
+  pr: {
+    start: "pr {branch}",       // e.g. create a worktree + open your session
+    done: "pr-done {branch}",   // e.g. tear the worktree down
+  },
+};
+```
+
+Leave either empty to disable that action. Requires the [`gh`](https://cli.github.com)
+CLI, authenticated (`gh auth login`) with a GitHub remote.
 
 ## AI review & Q&A
 

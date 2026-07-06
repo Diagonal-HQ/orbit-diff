@@ -24,6 +24,11 @@ if (args[0] === "--version" || args[0] === "-v" || args[0] === "version") {
   console.log(VERSION);
   process.exit(0);
 }
+if (args[0] === "prs" || args[0] === "pr") {
+  const { runPrManager } = await import("./src/pr-manager.jsx");
+  await runPrManager();
+  process.exit(0);
+}
 if (args[0] === "init") {
   const { scaffoldConfig } = await import("./src/ai/config.mjs");
   const force = args.includes("--force") || args.includes("-f");

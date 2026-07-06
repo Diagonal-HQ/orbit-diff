@@ -27,6 +27,11 @@ export const DEFAULTS = {
   model: "claude-opus-4-8",
   thinkingLevel: "medium",
   review: { concurrency: 4 },
+  // `orbit-diff prs` PR-management commands. Empty by default — set these to the
+  // shell command you run to start / finish work on a PR. Tokens {branch} {base}
+  // {number} {repo} {title} {url} are substituted (shell-quoted) before running,
+  // and the command runs in your login shell so aliases/functions resolve.
+  pr: { start: "", done: "" },
 };
 
 // The starter file written by `orbit-diff init` and by the first-run auto-scaffold.
@@ -48,6 +53,13 @@ export default {
   thinkingLevel: "medium", // off | minimal | low | medium | high | xhigh
   review: {
     concurrency: 4, // how many files to review in parallel (1–8)
+  },
+  // \`orbit-diff prs\` — commands to start / finish work on a PR. Tokens
+  // {branch} {base} {number} {repo} {title} {url} are substituted (shell-quoted).
+  // Runs in your login shell, so shell aliases/functions work.
+  pr: {
+    start: "", // e.g. "pr {branch}"    — run when you pick a PR to work on
+    done: "", //  e.g. "pr-done {branch}" — run when you're finished with it
   },
 };
 `;
@@ -108,7 +120,11 @@ export async function loadConfig() {
     ...DEFAULTS,
     ...(fileCfg || {}),
     review: { ...DEFAULTS.review, ...(fileCfg?.review || {}) },
+    pr: { ...DEFAULTS.pr, ...(fileCfg?.pr || {}) },
   };
+  // Commands must be strings; coerce anything else back to the empty default.
+  merged.pr.start = typeof merged.pr.start === "string" ? merged.pr.start : "";
+  merged.pr.done = typeof merged.pr.done === "string" ? merged.pr.done : "";
 
   if (!THINKING_LEVELS.includes(merged.thinkingLevel)) {
     warning = warning || `unknown thinkingLevel "${merged.thinkingLevel}"; using "${DEFAULTS.thinkingLevel}"`;

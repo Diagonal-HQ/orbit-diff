@@ -20,6 +20,15 @@ export default {
   review: {
     concurrency: 4, // how many files to review in parallel (1–8)
   },
+  // `orbit-diff prs` — a PR manager for the current repo. It lists the open,
+  // non-draft PRs assigned to you or awaiting your review; pick one to run
+  // `start`, or mark it done to run `done`. Tokens {branch} {base} {number}
+  // {repo} {title} {url} are substituted (shell-quoted) before the command runs
+  // in your login shell (so aliases/functions resolve). Leave empty to disable.
+  pr: {
+    start: "", // e.g. "pr {branch}"      — checkout/worktree, spin up your session
+    done: "", //  e.g. "pr-done {branch}"  — tear it down when you're finished
+  },
 };
 
 // This is a real ES module, so you can compute values — e.g. read env vars for a
