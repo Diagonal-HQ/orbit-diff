@@ -7,6 +7,35 @@ function git(args) {
   return spawnSync("git", args, { encoding: "utf8", maxBuffer: BUF });
 }
 
+// List this repo's git worktrees as [{ path, branch, head, detached, bare }],
+// parsed from `git worktree list --porcelain`. The first entry is the main
+// working tree. `branch` is the short name (no refs/heads/) or null when the
+// worktree is detached/bare. Returns [] when git can't answer.
+export function listWorktrees() {
+  const res = git(["worktree", "list", "--porcelain"]);
+  if (res.status !== 0 || !res.stdout) return [];
+  const out = [];
+  let cur = null;
+  for (const line of res.stdout.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      if (cur) out.push(cur);
+      cur = { path: line.slice(9), branch: null, head: null, detached: false, bare: false };
+    } else if (!cur) {
+      continue; // records only appear after a `worktree` line
+    } else if (line.startsWith("HEAD ")) {
+      cur.head = line.slice(5);
+    } else if (line.startsWith("branch ")) {
+      cur.branch = line.slice(7).replace(/^refs\/heads\//, "");
+    } else if (line === "detached") {
+      cur.detached = true;
+    } else if (line === "bare") {
+      cur.bare = true;
+    }
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
 // Load a patch to view.
 //
 // With explicit args, they pass straight through to `git diff` (e.g. a range

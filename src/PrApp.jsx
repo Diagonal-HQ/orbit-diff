@@ -2,20 +2,21 @@ import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import { useDimensions } from "./useDimensions.mjs";
 import { prOverview, renderCommand, checkState } from "./pr.mjs";
+import { tildeify } from "./paths.mjs";
 
-// PR-management TUI for the current repo. Left rail = the open, non-draft PRs
-// assigned to me or awaiting my review; right panel = a live overview of the
-// highlighted one. Picking a PR (`enter`/`o`) or finishing it (`d`) sets a
-// handoff and exits, so index.jsx can release the terminal to the configured
-// `pr.start` / `pr.done` command, then re-launch us on a fresh list.
+// PR-management TUI for the current repo.
 //
-// The list itself is fetched *inside* the component (`loadPRs`), so the shell
-// paints instantly and the PRs stream in when `gh` answers — the first `gh`
-// round-trip no longer blocks boot. `r` re-runs the fetch in place.
+//   ┌───────────────── PRs waiting on me ──────────────┬─ worktrees ─┐
+//   ├──────────── overview + description ──────────────┼─ reviewers/ ─┤
+//   └──────────────────────────────────────────────────┴─ checks ────┘
 //
-// `handoff` is a plain object index.jsx passes in and reads after exit:
-//   { action: "start" | "done" | null, pr, selected }
-export function PrApp({ loadPRs, config, handoff, initialSelected = 0 }) {
+// The list + worktrees are fetched inside the component (`loadPRs` /
+// `loadWorktrees`), so the shell paints instantly and the data streams in when
+// `gh` answers; `r` refetches in place. Picking a PR (`enter`/`o`) or finishing
+// it (`d`) runs the configured `pr.start` / `pr.done` command in the background
+// (via the `runPr` callback) — it does NOT take over the terminal — and a toast
+// reports where its output is logged. `/` filters the list.
+export function PrApp({ loadPRs, loadWorktrees, runPr, config }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
@@ -23,30 +24,37 @@ export function PrApp({ loadPRs, config, handoff, initialSelected = 0 }) {
   // a message when `gh` couldn't answer at all (not a repo, not authed, …).
   const [prs, setPrs] = useState(null);
   const [loadError, setLoadError] = useState(null);
-  const [selected, setSelected] = useState(clampIdx(initialSelected, 0));
+  const [worktrees, setWorktrees] = useState([]);
+  const [selected, setSelected] = useState(0);
   const [toast, setToast] = useState(null);
+  const [mode, setMode] = useState("normal"); // "normal" | "search"
+  const [query, setQuery] = useState("");
   // Overview cache: number -> overview object (or { error }); undefined = unfetched.
   const [details, setDetails] = useState({});
   // Numbers we've already kicked off a fetch for. A ref (not `details`) so it
   // can't be a dependency of the effect below — depending on the cache we set
   // would re-run the effect and its cleanup would cancel the in-flight fetch.
   const requested = useRef(new Set());
-  // Bumped by `r` to re-run the list fetch.
   const [reloadTick, setReloadTick] = useState(0);
 
-  // Fetch (and refetch) the PR list. Clears the overview caches so a refresh
-  // pulls fresh detail too, and clamps the selection into the new list.
+  // Fetch (and refetch) the PR list + worktrees. Worktrees are a fast local git
+  // call, so we set them immediately; the PR list arrives asynchronously.
   useEffect(() => {
     let live = true;
     setPrs(null);
     setLoadError(null);
     requested.current = new Set();
     setDetails({});
+    try {
+      setWorktrees(loadWorktrees() || []);
+    } catch {
+      setWorktrees([]);
+    }
     loadPRs().then(
-      (list) => {
+      (loaded) => {
         if (!live) return;
-        setPrs(list);
-        setSelected((s) => clampIdx(s, list.length));
+        setPrs(loaded);
+        setSelected((s) => clampIdx(s, loaded.length));
       },
       (err) => {
         if (live) {
@@ -58,10 +66,15 @@ export function PrApp({ loadPRs, config, handoff, initialSelected = 0 }) {
     return () => {
       live = false;
     };
-  }, [loadPRs, reloadTick]);
+  }, [loadPRs, loadWorktrees, reloadTick]);
 
   const loading = prs === null;
-  const list = prs || [];
+  const all = prs || [];
+  // Branch → worktree, for both the PR indicator and the worktrees pane's PR tags.
+  const wtByBranch = new Map(worktrees.filter((w) => w.branch).map((w) => [w.branch, w]));
+  const prByBranch = new Map(all.map((p) => [p.headRefName, p.number]));
+
+  const list = filterPRs(all, query);
   const current = list[selected] || null;
 
   // Lazily fetch the highlighted PR's overview once, caching by number.
@@ -81,43 +94,61 @@ export function PrApp({ loadPRs, config, handoff, initialSelected = 0 }) {
   }, [current]);
 
   const startCmd = current ? renderCommand(config.pr.start, current) : null;
-  const doneCmd = current ? renderCommand(config.pr.done, current) : null;
 
-  const finish = (action) => {
+  const run = (action) => {
     if (!current) return;
-    if (action === "start" && !startCmd) return setToast("pr.start isn't configured — add it to config.js");
-    if (action === "done" && !doneCmd) return setToast("pr.done isn't configured — add it to config.js");
-    handoff.action = action;
-    handoff.pr = current;
-    handoff.selected = selected;
-    exit();
+    const res = runPr(action, current);
+    if (!res.ok) return setToast(res.error);
+    const verb = action === "start" ? "started" : "finishing";
+    const where = res.logPath ? ` · log ${tildeify(res.logPath)}` : "";
+    setToast(`▶ ${verb} #${current.number} in background${where} · r to refresh`);
   };
 
   useInput((input, key) => {
-    if (input === "q" || key.escape) {
-      handoff.action = null;
+    // ---- Search mode: capture typing into the filter ----
+    if (mode === "search") {
+      if (key.escape) {
+        setQuery("");
+        return setMode("normal");
+      }
+      if (key.return) return setMode("normal"); // keep the filter, exit typing
+      if (key.backspace || key.delete) return setQuery((q) => q.slice(0, -1));
+      if (input && !key.ctrl && !key.meta) return setQuery((q) => q + input);
+      return;
+    }
+
+    // ---- Normal mode ----
+    if (input === "q") return exit();
+    if (key.escape) {
+      if (query) return setQuery(""); // clear an active filter first
       return exit();
+    }
+    if (input === "/") {
+      setToast(null);
+      return setMode("search");
     }
     if (input === "r") {
       setToast(null);
-      return setReloadTick((t) => t + 1); // refetch in place
+      return setReloadTick((t) => t + 1);
     }
     if (loading || !list.length) return;
     if (key.downArrow || input === "j") return setSelected((s) => clampIdx(s + 1, list.length));
     if (key.upArrow || input === "k") return setSelected((s) => clampIdx(s - 1, list.length));
     if (input === "g") return setSelected(0);
     if (input === "G") return setSelected(list.length - 1);
-    if (key.return || input === "o") return finish("start");
-    if (input === "d") return finish("done");
+    if (key.return || input === "o") return run("start");
+    if (input === "d") return run("done");
   });
 
   const bodyH = Math.max(6, rows - 2); // rows between the title and status bars
-  // Full-width list up top; the detail area fills the rest, split into two panes.
-  const topH = Math.max(4, Math.min(Math.floor(bodyH * 0.45), (loading ? 0 : list.length) + 3));
+  const topH = Math.max(4, Math.min(Math.floor(bodyH * 0.45), Math.max(list.length, worktrees.length) + 3));
   const lowerH = Math.max(3, bodyH - topH);
-  const leftW = Math.max(24, Math.floor(cols * 0.58));
+  // One shared column split, so the top and bottom panes line up vertically.
+  const leftW = Math.max(24, Math.floor(cols * 0.6));
   const rightW = Math.max(20, cols - leftW);
   const ov = current ? details[current.number] : undefined;
+
+  const countLabel = loading ? "loading…" : query ? `${list.length}/${all.length}` : `${all.length} open`;
 
   return (
     <Box flexDirection="column" width={cols} height={rows}>
@@ -126,54 +157,110 @@ export function PrApp({ loadPRs, config, handoff, initialSelected = 0 }) {
           {" "}
           <Text bold color="magenta">orbit-diff</Text>
           <Text dimColor> · PRs for me</Text>
-          <Text dimColor>  ({loading ? "loading…" : `${list.length} open`})</Text>
+          <Text dimColor>  ({countLabel})</Text>
         </Text>
       </Box>
 
-      <PrList prs={list} loading={loading} error={loadError} selected={selected} width={cols} height={topH} />
+      <Box height={topH}>
+        <PrList
+          prs={list}
+          loading={loading}
+          error={loadError}
+          selected={selected}
+          query={query}
+          searching={mode === "search"}
+          wtBranches={wtByBranch}
+          width={leftW}
+          height={topH}
+        />
+        <WorktreePane worktrees={worktrees} prByBranch={prByBranch} width={rightW} height={topH} />
+      </Box>
 
       <Box height={lowerH}>
         <OverviewPane pr={current} overview={ov} width={leftW} height={lowerH} />
         <MetaPane pr={current} overview={ov} width={rightW} height={lowerH} />
       </Box>
 
-      <StatusBar
-        toast={toast}
-        startSet={!!config.pr.start.trim()}
-        doneSet={!!config.pr.done.trim()}
-        startCmd={startCmd}
-      />
+      {mode === "search" ? (
+        <SearchBar query={query} count={list.length} />
+      ) : (
+        <StatusBar
+          toast={toast}
+          startSet={!!config.pr.start.trim()}
+          doneSet={!!config.pr.done.trim()}
+          startCmd={startCmd}
+        />
+      )}
     </Box>
   );
 }
 
-// The left rail: one row per PR — review-state glyph, #number, title.
-function PrList({ prs, loading, error, selected, width, height }) {
-  const contentH = Math.max(1, height - 2);
-  const start = Math.max(0, Math.min(selected - Math.floor(contentH / 2), Math.max(0, prs.length - contentH)));
-  const window = prs.slice(start, start + contentH);
+// Top-left rail: one row per PR — review-state glyph, a `⧉` when the branch is
+// already checked out in a local worktree, #number, and the title.
+function PrList({ prs, loading, error, selected, query, searching, wtBranches, width, height }) {
+  const listRoom = Math.max(1, height - 2 - 1); // minus border rows and the header
+  const start = Math.max(0, Math.min(selected - Math.floor(listRoom / 2), Math.max(0, prs.length - listRoom)));
+  const window = prs.slice(start, start + listRoom);
   const room = width - 4; // borders + padding
 
   return (
-    <Box flexDirection="column" width={width} height={height} borderStyle="round" borderColor="cyan" paddingX={1}>
-      <Text bold color="cyan" wrap="truncate">Pull requests {loading ? "" : `(${prs.length})`}</Text>
+    <Box flexDirection="column" width={width} height={height} borderStyle="round" borderColor={searching ? "yellow" : "cyan"} paddingX={1}>
+      <Text bold color="cyan" wrap="truncate">
+        Pull requests {loading ? "" : `(${prs.length})`}
+        {query ? <Text dimColor> · /{query}</Text> : null}
+      </Text>
       {loading && <Text dimColor>loading… (q to quit)</Text>}
       {!loading && error && <Text color="red" wrap="truncate">{error}</Text>}
-      {!loading && !error && prs.length === 0 && <Text dimColor>nothing assigned to or awaiting you</Text>}
+      {!loading && !error && prs.length === 0 && (
+        <Text dimColor>{query ? "no PRs match" : "nothing assigned to or awaiting you"}</Text>
+      )}
       {window.map((pr, i) => {
         const idx = start + i;
         const active = idx === selected;
         const g = reviewGlyph(pr.reviewDecision);
+        const hasWt = wtBranches.has(pr.headRefName);
         const num = `#${pr.number}`;
-        const title = truncate(pr.title, Math.max(4, room - num.length - 3));
+        const title = truncate(pr.title, Math.max(4, room - num.length - 5));
         return (
           <Text key={pr.number} inverse={active} wrap="truncate">
             <Text color={g.color}>{g.char} </Text>
+            <Text color="blueBright">{hasWt ? "⧉ " : "  "}</Text>
             <Text dimColor>{num} </Text>
             <Text color={active ? "white" : undefined}>{title}</Text>
           </Text>
         );
       })}
+    </Box>
+  );
+}
+
+// Top-right pane: the repo's git worktrees, tagged with the matching PR number
+// when a worktree's branch is one of the PRs above.
+function WorktreePane({ worktrees, prByBranch, width, height }) {
+  const listRoom = Math.max(1, height - 2 - 1); // minus border rows and the header
+  // Reserve a row for "… N more" when the list is longer than fits.
+  const window = worktrees.length > listRoom ? worktrees.slice(0, listRoom - 1) : worktrees;
+  const room = width - 4;
+
+  return (
+    <Box flexDirection="column" width={width} height={height} borderStyle="round" borderColor="gray" paddingX={1}>
+      <Text bold color="blueBright" wrap="truncate">Worktrees ({worktrees.length})</Text>
+      {worktrees.length === 0 && <Text dimColor>none</Text>}
+      {window.map((w, i) => {
+        const label = w.bare
+          ? "(bare)"
+          : w.branch || (w.head ? `detached ${w.head.slice(0, 7)}` : "(detached)");
+        const prNum = w.branch ? prByBranch.get(w.branch) : undefined;
+        const tag = prNum ? ` #${prNum}` : "";
+        return (
+          <Text key={w.path + i} wrap="truncate">
+            <Text color="blueBright">⧉ </Text>
+            <Text color={prNum ? "cyan" : undefined}>{truncate(label, Math.max(4, room - 2 - tag.length))}</Text>
+            {prNum ? <Text dimColor>{tag}</Text> : null}
+          </Text>
+        );
+      })}
+      {worktrees.length > listRoom && <Text dimColor>… {worktrees.length - window.length} more</Text>}
     </Box>
   );
 }
@@ -193,8 +280,6 @@ function OverviewPane({ pr, overview, width, height }) {
   // the description never overflows the fixed pane height (overflow garbles the
   // frame). 2 = title + author/branch; then a spacer + the status lines.
   const summaryRows = loaded ? 1 + 2 + (labels.length > 0 ? 1 : 0) : 1 + 1;
-  // Inner height (minus border) minus the summary minus the description's own
-  // margin + header row.
   const bodyRoom = Math.max(0, height - 2 - 2 - summaryRows - 2);
   const showBody = bodyLines.length > 0 && bodyRoom >= 1;
   const bodyShown = bodyLines.length > bodyRoom ? bodyLines.slice(0, Math.max(0, bodyRoom - 1)) : bodyLines;
@@ -213,7 +298,7 @@ function OverviewPane({ pr, overview, width, height }) {
       <Box marginTop={1} flexDirection="column">
         {ov === null && <Text dimColor>loading overview…</Text>}
         {ov && ov.error && <Text color="red" wrap="truncate">couldn't load: {ov.error}</Text>}
-        {ov && !ov.error && (
+        {loaded && (
           <>
             <Text wrap="truncate">
               <Text dimColor>review  </Text>
@@ -247,8 +332,8 @@ function OverviewPane({ pr, overview, width, height }) {
 }
 
 // Lower-right pane: who's on the hook (requested reviewers, assignees) and the
-// per-check status rollup. Checks are ordered failing → pending → passing so the
-// ones that need attention are always visible even when the list is long.
+// per-check status — one row per check (latest run only), ordered failing →
+// pending → passing so the ones that need attention are always visible.
 function MetaPane({ pr, overview, width, height }) {
   if (!pr) {
     return <Box width={width} height={height} borderStyle="round" borderColor="gray" paddingX={1} />;
@@ -256,35 +341,26 @@ function MetaPane({ pr, overview, width, height }) {
   const ov = overview;
   const room = width - 4;
 
-  if (ov == null) {
+  if (ov == null || ov.error) {
     return (
       <Box width={width} height={height} borderStyle="round" borderColor="gray" paddingX={1}>
-        <Text dimColor>{ov === null ? "loading…" : ""}</Text>
-      </Box>
-    );
-  }
-  if (ov.error) {
-    return (
-      <Box width={width} height={height} borderStyle="round" borderColor="gray" paddingX={1}>
-        <Text color="red" wrap="truncate">{ov.error}</Text>
+        <Text color={ov && ov.error ? "red" : undefined} dimColor={!ov || !ov.error} wrap="truncate">
+          {ov === null ? "loading…" : ov && ov.error ? ov.error : ""}
+        </Text>
       </Box>
     );
   }
 
   const reviewers = (ov.reviewRequests || []).map((r) => r.login || r.name || r.slug || "?");
   const assignees = (ov.assignees || []).map((a) => a.login);
-  const checks = [...(ov.statusCheckRollup || [])].sort(
-    (a, b) => checkRank(checkState(a)) - checkRank(checkState(b)),
-  );
+  const checks = [...(ov.checkRuns || [])].sort((a, b) => checkRank(checkState(a)) - checkRank(checkState(b)));
 
-  // Rows consumed above the checks list: the Reviewers block (header + its rows),
-  // a spacer, the Assignees block (header + rows), a spacer, and the Checks
-  // header. Whatever height is left is how many individual checks we can show.
-  const reviewerRows = Math.max(1, reviewers.length); // "none requested" is 1 row
+  // Rows consumed above the checks list: Reviewers header + its rows, a spacer,
+  // Assignees header + rows, a spacer, the Checks header. What's left is checks.
+  const reviewerRows = Math.max(1, reviewers.length);
   const assigneeRows = Math.max(1, assignees.length);
   const above = 1 + reviewerRows + 1 + 1 + assigneeRows + 1 + 1;
   const checkRoom = Math.max(1, height - 2 - above);
-  // Reserve a row for the "… N more" line when the list is longer than fits.
   const checksShown = checks.length > checkRoom ? checks.slice(0, Math.max(0, checkRoom - 1)) : checks;
 
   return (
@@ -295,14 +371,14 @@ function MetaPane({ pr, overview, width, height }) {
         <Text key={"r" + i} wrap="truncate"><Text dimColor>• </Text>{truncate(r, room - 2)}</Text>
       ))}
 
-      <Text bold color="cyan" wrap="truncate">{" "}</Text>
+      <Text>{" "}</Text>
       <Text bold color="cyan" wrap="truncate">Assignees</Text>
       {assignees.length === 0 && <Text dimColor>none</Text>}
       {assignees.map((a, i) => (
         <Text key={"a" + i} wrap="truncate"><Text dimColor>• </Text>{truncate(a, room - 2)}</Text>
       ))}
 
-      <Text bold color="cyan" wrap="truncate">{" "}</Text>
+      <Text>{" "}</Text>
       <Text bold color="cyan" wrap="truncate">
         Checks <Text dimColor>({ov.checks.passing}✓ {ov.checks.failing}✗ {ov.checks.pending}●)</Text>
       </Text>
@@ -321,13 +397,6 @@ function MetaPane({ pr, overview, width, height }) {
   );
 }
 
-const CHECK_GLYPH = {
-  pass: { char: "✓", color: "green" },
-  fail: { char: "✗", color: "red" },
-  pending: { char: "●", color: "yellow" },
-};
-const checkRank = (s) => (s === "fail" ? 0 : s === "pending" ? 1 : 2);
-
 function ReviewState({ decision }) {
   const map = {
     APPROVED: { text: "approved", color: "green" },
@@ -344,6 +413,20 @@ function MergeState({ pr }) {
   return <Text dimColor>{(pr.mergeable || "unknown").toLowerCase()}</Text>;
 }
 
+function SearchBar({ query, count }) {
+  return (
+    <Box height={1}>
+      <Text wrap="truncate">
+        {" "}
+        <Text color="yellow">/</Text>
+        {query}
+        <Text inverse> </Text>
+        <Text dimColor>  {count} match{count === 1 ? "" : "es"} · enter keep · esc clear</Text>
+      </Text>
+    </Box>
+  );
+}
+
 function StatusBar({ toast, startSet, doneSet, startCmd }) {
   if (toast) {
     return (
@@ -357,7 +440,7 @@ function StatusBar({ toast, startSet, doneSet, startCmd }) {
       <Text wrap="truncate">
         {" "}
         <Text dimColor>↑↓/jk</Text> move  <Text bold>enter</Text>
-        <Text dimColor>/o</Text> {startSet ? "start" : <Text dimColor>start (unset)</Text>}  <Text bold>d</Text> {doneSet ? "done" : <Text dimColor>done (unset)</Text>}  <Text bold>r</Text> refresh  <Text bold>q</Text> quit
+        <Text dimColor>/o</Text> {startSet ? "start" : <Text dimColor>start (unset)</Text>}  <Text bold>d</Text> {doneSet ? "done" : <Text dimColor>done (unset)</Text>}  <Text bold>/</Text> search  <Text bold>r</Text> refresh  <Text bold>q</Text> quit
         {startCmd ? <Text dimColor>   ↵ {startCmd}</Text> : null}
       </Text>
     </Box>
@@ -372,6 +455,28 @@ const reviewGlyph = (decision) => {
     default: return { char: "○", color: "gray" };
   }
 };
+
+const CHECK_GLYPH = {
+  pass: { char: "✓", color: "green" },
+  fail: { char: "✗", color: "red" },
+  pending: { char: "●", color: "yellow" },
+};
+const checkRank = (s) => (s === "fail" ? 0 : s === "pending" ? 1 : 2);
+
+// Fuzzy-filter PRs by a subsequence match over "#number title branch".
+function filterPRs(prs, query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return prs;
+  return prs.filter((p) => subseq(q, `#${p.number} ${p.title} ${p.headRefName}`.toLowerCase()));
+}
+
+function subseq(needle, hay) {
+  let i = 0;
+  for (let j = 0; j < hay.length && i < needle.length; j++) {
+    if (hay[j] === needle[i]) i++;
+  }
+  return i === needle.length;
+}
 
 function clampIdx(i, len) {
   if (len <= 0) return 0;

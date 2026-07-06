@@ -125,13 +125,15 @@ one you pick.
 orbit-diff prs              # (alias: orbit-diff pr)
 ```
 
-- **Top panel** — a full-width list of the PRs waiting on you, each with a
-  review-state glyph (`✓` approved · `✗` changes requested · `●` review required ·
-  `○` no reviews).
+- **Top-left** — the PRs waiting on you, each with a review-state glyph
+  (`✓` approved · `✗` changes requested · `●` review required · `○` no reviews).
+  A `⧉` marks any PR whose branch is already checked out in a local worktree.
+- **Top-right** — the repo's git worktrees, each tagged with its matching PR
+  number when the branch lines up with one of the PRs.
 - **Bottom-left** — an overview of the highlighted PR: review decision,
   mergeability, diff size, labels, and the description.
 - **Bottom-right** — who's on the hook: requested reviewers, assignees, and the
-  per-check status rollup (failing/pending first).
+  per-check status (latest run per check, failing/pending first).
 
 The list loads asynchronously, so the shell paints immediately and the PRs
 stream in when `gh` answers.
@@ -141,12 +143,14 @@ stream in when `gh` answers.
 | `↑↓` / `j` `k` | move · `g` / `G` jump to top / bottom |
 | `Enter` / `o` | **start** — run your `pr.start` command for this PR |
 | `d` | **done** — run your `pr.done` command for this PR |
-| `r` | refresh the list |
-| `q` / `Esc` / `Ctrl-c` | quit |
+| `/` | filter the list (fuzzy match on number / title / branch) |
+| `r` | refresh the list + worktrees |
+| `q` / `Esc` / `Ctrl-c` | quit (`Esc` clears an active filter first) |
 
-`start` and `done` hand the terminal over to the command (like the Claude
-handoff below), so it can prompt, open an editor, or drop you into a session;
-when it exits you're back in the list on a freshly-reloaded set of PRs.
+`start` and `done` run their command **in the background** — orbit-diff keeps
+running and you stay in the list. Each run's output is redirected to a log under
+`~/.cache/orbit-diff/…` (the path is shown in a toast); press `r` once it's done
+to pick up any new worktree.
 
 Configure the two commands in `~/.config/orbit-diff/config.js`. The tokens
 `{branch}` `{base}` `{number}` `{repo}` `{title}` `{url}` are substituted
