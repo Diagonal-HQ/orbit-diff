@@ -49,8 +49,27 @@ export async function runPrManager() {
     }
   };
 
+  // Open a URL in the system's default browser, detached so it never touches the
+  // TUI's terminal. Returns { ok } / { ok:false, error }.
+  const openUrl = (url) => {
+    if (!url) return { ok: false, error: "no URL to open" };
+    const platform = process.platform;
+    const [cmd, args] =
+      platform === "darwin" ? ["open", [url]]
+      : platform === "win32" ? ["cmd", ["/c", "start", "", url]]
+      : ["xdg-open", [url]];
+    try {
+      const child = spawn(cmd, args, { stdio: "ignore", detached: true });
+      child.on("error", () => {}); // swallow ENOENT etc.; nothing to log onto the TUI
+      child.unref();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  };
+
   const app = render(
-    <PrApp loadPRs={listReviewPRs} loadWorktrees={listWorktrees} runPr={runPr} config={config} />,
+    <PrApp loadPRs={listReviewPRs} loadWorktrees={listWorktrees} runPr={runPr} openUrl={openUrl} config={config} />,
     { exitOnCtrlC: true, stdout: inPlaceStdout(process.stdout) },
   );
   await app.waitUntilExit();
