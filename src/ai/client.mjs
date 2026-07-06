@@ -160,6 +160,30 @@ export async function ask(question, context, config, onDelta) {
   }
 }
 
+// Start a multi-turn Q&A conversation. Unlike `ask`, the session is kept alive so
+// each `send` remembers the previous turns (and any files it read) — the user can
+// chat back and forth. Call `dispose` when the conversation is closed. Session
+// creation is deferred to the first `send` so config/auth errors surface there.
+export async function startConversation(config) {
+  let session;
+  return {
+    async send(text, onDelta) {
+      try {
+        if (!session) {
+          session = await makeSession(config, { systemPrompt: ASK_SYSTEM_PROMPT, tools: ["read", "grep", "find", "ls"] });
+        }
+        return await runPrompt(session, text, onDelta);
+      } catch (err) {
+        throw asAiError(err, config);
+      }
+    },
+    dispose() {
+      session?.dispose();
+      session = null;
+    },
+  };
+}
+
 function asAiError(err, config) {
   if (err instanceof AiError) return err;
   const msg = err?.message || String(err);

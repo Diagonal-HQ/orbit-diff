@@ -57,13 +57,13 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
   const [reviewing, setReviewing] = useState(false); // a review pass is in flight
   const [reviewProgress, setReviewProgress] = useState({ done: 0, total: 0 });
   const [reviewError, setReviewError] = useState(null); // first error of the pass, shown in-panel
-  const [askDraft, setAskDraft] = useState(""); // question being typed / asked
-  const [askAnswer, setAskAnswer] = useState(""); // streamed answer text
-  const [askSent, setAskSent] = useState(false); // question submitted (input → answer view)
+  const [askDraft, setAskDraft] = useState(""); // question currently being typed
+  const [askMessages, setAskMessages] = useState([]); // chat transcript: {role, text}
   const [asking, setAsking] = useState(false); // an answer is streaming
   const aiRef = useRef(null); // memoized { config, orchestrator, preflight } once loaded
   const reviewToken = useRef(0); // guards stale async review callbacks
   const askToken = useRef(0); // guards stale async ask callbacks
+  const askConvo = useRef(null); // live multi-turn Q&A session, or null
 
   // Look up the branch's PR once on mount so the picker can offer "post to PR"
   // only when one actually exists. Best-effort and off the critical path — a
@@ -485,18 +485,35 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
     setToast("finding → annotation (r to submit)");
   };
 
+  // Tear down the live Q&A session (if any) and forget its handle.
+  const closeAsk = () => {
+    askToken.current++; // ignore any in-flight answer deltas
+    askConvo.current?.dispose();
+    askConvo.current = null;
+  };
+
   const openAsk = () => {
+    closeAsk();
     setAskDraft("");
-    setAskAnswer("");
-    setAskSent(false);
+    setAskMessages([]);
     setAsking(false);
     setMode("ask");
   };
 
-  // Send the typed question; stream the answer into the panel. Cache-first.
+  // Append `delta` to the last (assistant) message — the one currently streaming.
+  const appendToLastMessage = (delta) =>
+    setAskMessages((ms) => {
+      if (!ms.length) return ms;
+      const last = ms[ms.length - 1];
+      return [...ms.slice(0, -1), { ...last, text: last.text + delta }];
+    });
+
+  // Send the typed question into the conversation and stream the answer. The
+  // session is created on the first turn and reused for follow-ups, so the model
+  // remembers the earlier exchange.
   const sendAsk = async () => {
     const q = askDraft.trim();
-    if (!q) return;
+    if (!q || asking) return;
     const ai = await loadAi();
     if (ai.error) {
       setMode("normal");
@@ -507,24 +524,26 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
       setMode("normal");
       return setToast(pf.message);
     }
+    if (!askConvo.current) {
+      askConvo.current = ai.orchestrator.startConversation(files, selectedFile, ai.config);
+    }
     const token = ++askToken.current;
-    setAskSent(true);
+    setAskDraft("");
     setAsking(true);
-    setAskAnswer("");
-    ai.orchestrator
-      .answerQuestion(q, files, selectedFile, ai.config, (delta) => {
+    setAskMessages((ms) => [...ms, { role: "user", text: q }, { role: "assistant", text: "" }]);
+    askConvo.current
+      .ask(q, (delta) => {
         if (token !== askToken.current) return;
-        setAskAnswer((a) => a + delta);
+        appendToLastMessage(delta);
       })
-      .then(({ cached }) => {
+      .then(() => {
         if (token !== askToken.current) return;
         setAsking(false);
-        if (cached) setToast("answered from cache");
       })
       .catch((e) => {
         if (token !== askToken.current) return;
         setAsking(false);
-        setAskAnswer((a) => a + `\n\n[error: ${e.message || e}]`);
+        appendToLastMessage(`\n\n[error: ${e.message || e}]`);
       });
   };
 
@@ -549,19 +568,15 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
       return;
     }
 
-    // ---- Ask a question ----
+    // ---- Ask a question (multi-turn chat) ----
     if (mode === "ask") {
       if (key.escape) {
-        askToken.current++; // ignore any in-flight answer deltas
+        closeAsk();
         return setMode("normal");
       }
-      if (!askSent) {
-        if (key.return) return sendAsk();
-        if (key.backspace || key.delete) return setAskDraft((d) => d.slice(0, -1));
-        if (input && !key.ctrl && !key.meta) setAskDraft((d) => d + input);
-        return;
-      }
-      if (input === "?") return openAsk(); // ask another
+      if (key.return) return sendAsk(); // send the follow-up (no-op while streaming)
+      if (key.backspace || key.delete) return setAskDraft((d) => d.slice(0, -1));
+      if (input && !key.ctrl && !key.meta) return setAskDraft((d) => d + input);
       return;
     }
 
@@ -745,10 +760,9 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
           />
         ) : mode === "ask" ? (
           <AskPanel
-            question={askDraft}
-            answer={askAnswer}
+            draft={askDraft}
+            messages={askMessages}
             asking={asking}
-            sent={askSent}
             width={leftW}
             height={bodyH}
           />
@@ -829,7 +843,7 @@ function StatusBar({
     return <Bar><Text color="blueBright">AI review</Text><Dim> · ↑↓ move · enter jump · p promote · esc close</Dim></Bar>;
   }
   if (mode === "ask") {
-    return <Bar><Text color="blueBright">ask</Text><Dim> · type a question · enter ask · esc close</Dim></Bar>;
+    return <Bar><Text color="blueBright">ask</Text><Dim> · type a question · enter send · esc close</Dim></Bar>;
   }
   if (toast) {
     return <Bar><Text color="green">✓ </Text><Text>{toast}</Text></Bar>;

@@ -2,17 +2,8 @@
 // review fan-out, and Q&A context assembly. App.jsx calls into here so it never
 // touches the SDK or the cache directly.
 
-import { createHash } from "node:crypto";
-import { ask, reviewFile } from "./client.mjs";
-import {
-  answerKey,
-  fileDigest,
-  readAnswer,
-  readReview,
-  reviewKey,
-  writeAnswer,
-  writeReview,
-} from "./cache.mjs";
+import { reviewFile, startConversation as startClientConversation } from "./client.mjs";
+import { readReview, reviewKey, writeReview } from "./cache.mjs";
 import { makeFindings } from "./findings.mjs";
 
 // Review every file, cache-first, at most `concurrency` in flight. `onFileDone`
@@ -64,30 +55,22 @@ async function reviewOne(file, config) {
   return makeFindings(file, raw);
 }
 
-// Answer a question about the diff/codebase, cache-first. `files` is the full
-// parsed diff (for building context + the cache fingerprint), `focused` the file
-// currently in view. `onDelta` streams the fresh answer; on a cache hit it's
-// replayed in one shot so the UI path is uniform.
-export async function answerQuestion(question, files, focused, config, onDelta) {
-  const digest = diffDigest(files);
-  const key = answerKey(question, digest, config);
-  const cached = readAnswer(key);
-  if (cached != null) {
-    onDelta?.(cached);
-    return { answer: cached, cached: true };
-  }
+// Start a multi-turn Q&A about the diff/codebase. The first question is grounded
+// with the diff context (changed-file list + focused file); follow-ups go straight
+// to the live session, which already remembers the context and prior turns. Returns
+// a handle: `ask(question, onDelta)` streams each answer, `dispose()` ends it.
+export async function startConversation(files, focused, config) {
+  const convo = startClientConversation(config);
   const context = buildContext(files, focused);
-  const answer = await ask(question, context, config, onDelta);
-  writeAnswer(key, answer);
-  return { answer, cached: false };
-}
-
-// Fingerprint of the whole diff — an answer is reused only while the diff is
-// byte-identical to when it was produced.
-function diffDigest(files) {
-  const h = createHash("sha256");
-  for (const f of files) h.update(fileDigest(f)).update("|");
-  return h.digest("hex");
+  let first = true;
+  return {
+    ask(question, onDelta) {
+      const prompt = first ? `${context}\n\nQuestion: ${question}` : question;
+      first = false;
+      return convo.send(prompt, onDelta);
+    },
+    dispose: () => convo.dispose(),
+  };
 }
 
 // Compact grounding context: the list of changed files, plus the focused file's
