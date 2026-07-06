@@ -29,6 +29,7 @@ anytime:
 ```bash
 orbit-diff update           # self-replaces with the latest release
 orbit-diff --version        # show the installed version
+orbit-diff init             # write a starter config (--force to overwrite)
 ```
 
 Binaries are published for macOS arm64, Linux x64, and Linux arm64 (built on
@@ -137,10 +138,15 @@ questions on an unchanged diff are served from cache too.
 
 The backend is the [Pi SDK](https://pi.dev), so you choose the provider and model.
 Config lives at `~/.config/orbit-diff/config.js` (honours `$XDG_CONFIG_HOME`) — a
-user-global file, so it works with the installed binary and no repo directory:
+user-global file, so it works with the installed binary and no repo directory.
+
+The first time you run orbit-diff it writes a starter config there automatically
+(and `orbit-diff init` does the same on demand), so you can jump straight to
+editing it. You don't have to — a missing config just uses the built-in defaults
+below:
 
 ```bash
-mkdir -p ~/.config/orbit-diff
+orbit-diff init             # or just run orbit-diff once
 $EDITOR ~/.config/orbit-diff/config.js
 ```
 

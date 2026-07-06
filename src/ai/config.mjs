@@ -12,8 +12,9 @@
 // never handles secrets. The config file is a real ES module (`export default
 // {…}`), not JSON, so a user can compute values (read env, branch, etc.).
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 // Human-friendly path shown in "where do I configure this?" messages.
@@ -28,6 +29,29 @@ export const DEFAULTS = {
   review: { concurrency: 4 },
 };
 
+// The starter file written by `orbit-diff init` and by the first-run auto-scaffold.
+// It's the DEFAULTS above, spelled out as a real ES module the user can edit — the
+// binary ships without the repo, so we can't point people at the example file.
+export const CONFIG_TEMPLATE = `// orbit-diff AI configuration — controls the AI reviewer (\`A\`) and ask (\`?\`).
+// This is a real ES module, so you can compute values (read env vars, etc.).
+//
+// API KEYS ARE NOT SET HERE. orbit-diff uses the Pi SDK, which reads credentials
+// from its own env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY, …) or ~/.pi/agent/auth.json.
+// Set your key there, or run \`pi\` once and \`/login\`.
+//
+// \`provider\` + \`model\` can target any provider Pi supports (anthropic, openai,
+// google, amazon-bedrock, groq, deepseek, mistral, cloudflare, …).
+
+export default {
+  provider: "anthropic",
+  model: "claude-opus-4-8", // any model id Pi knows for the provider above
+  thinkingLevel: "medium", // off | minimal | low | medium | high | xhigh
+  review: {
+    concurrency: 4, // how many files to review in parallel (1–8)
+  },
+};
+`;
+
 // The base config directory ($XDG_CONFIG_HOME, else ~/.config) and the resolved
 // global config path.
 export function configHome() {
@@ -35,6 +59,27 @@ export function configHome() {
 }
 export function globalConfigPath() {
   return `${configHome()}/orbit-diff/config.js`;
+}
+
+// Write the starter config to `globalConfigPath()`. Skips an existing file unless
+// `force`, so it's safe to call on every run. Creates the parent dir as needed.
+// Returns { path, created } — `created` is false when an existing file was kept.
+export function scaffoldConfig({ force = false } = {}) {
+  const path = globalConfigPath();
+  if (existsSync(path) && !force) return { path, created: false };
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, CONFIG_TEMPLATE);
+  return { path, created: true };
+}
+
+// Best-effort first-run scaffold used at startup: materialise the config file if
+// it's missing, but never let a read-only home (or any fs error) break the viewer.
+export function ensureConfig() {
+  try {
+    return scaffoldConfig({ force: false });
+  } catch (err) {
+    return { path: globalConfigPath(), created: false, error: err };
+  }
 }
 
 // Load and normalise the effective AI config. Never throws — a missing config

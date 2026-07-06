@@ -24,6 +24,26 @@ if (args[0] === "--version" || args[0] === "-v" || args[0] === "version") {
   console.log(VERSION);
   process.exit(0);
 }
+if (args[0] === "init") {
+  const { scaffoldConfig } = await import("./src/ai/config.mjs");
+  const force = args.includes("--force") || args.includes("-f");
+  const { path, created } = scaffoldConfig({ force });
+  console.log(
+    created
+      ? `orbit-diff: wrote starter config → ${path}`
+      : `orbit-diff: config already exists at ${path} (pass --force to overwrite)`,
+  );
+  process.exit(0);
+}
+
+// First-run convenience: materialise the config so there's a file to edit. This
+// is best-effort — a missing/broken config already falls back to built-in
+// defaults, so we never block the viewer on it.
+{
+  const { ensureConfig } = await import("./src/ai/config.mjs");
+  const { created, path } = ensureConfig();
+  if (created) console.error(`\x1b[2morbit-diff: wrote starter config → ${path} (edit to change model/provider)\x1b[0m`);
+}
 
 let patch;
 try {
