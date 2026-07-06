@@ -149,8 +149,10 @@ stream in when `gh` answers.
 
 `start` and `done` run their command **in the background** — orbit-diff keeps
 running and you stay in the list. Each run's output is redirected to a log under
-`~/.cache/orbit-diff/…` (the path is shown in a toast); press `r` once it's done
-to pick up any new worktree.
+`~/.cache/orbit-diff/…` (the path is shown in a toast). The worktrees pane
+auto-refreshes every `pr.worktreeRefreshMinutes` (default 2; set 0 to disable),
+so a worktree your `start` command creates appears on its own — or press `r` to
+refresh everything immediately.
 
 Configure the two commands in `~/.config/orbit-diff/config.js`. The tokens
 `{branch}` `{base}` `{number}` `{repo}` `{title}` `{url}` are substituted
@@ -163,6 +165,7 @@ export default {
   pr: {
     start: "pr {branch}",       // e.g. create a worktree + open your session
     done: "pr-done {branch}",   // e.g. tear the worktree down
+    worktreeRefreshMinutes: 2,  // auto-refresh the worktrees pane (0 disables)
   },
 };
 ```

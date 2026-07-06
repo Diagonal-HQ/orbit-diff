@@ -68,6 +68,21 @@ export function PrApp({ loadPRs, loadWorktrees, runPr, config }) {
     };
   }, [loadPRs, loadWorktrees, reloadTick]);
 
+  // Auto-refresh just the worktrees pane on an interval (a cheap local git call,
+  // so we poll it without touching the PR list). 0 disables.
+  const refreshMin = config.pr.worktreeRefreshMinutes;
+  useEffect(() => {
+    if (!refreshMin || refreshMin <= 0) return;
+    const id = setInterval(() => {
+      try {
+        setWorktrees(loadWorktrees() || []);
+      } catch {
+        /* keep the last good list */
+      }
+    }, refreshMin * 60_000);
+    return () => clearInterval(id);
+  }, [refreshMin, loadWorktrees]);
+
   const loading = prs === null;
   const all = prs || [];
   // Branch → worktree, for both the PR indicator and the worktrees pane's PR tags.

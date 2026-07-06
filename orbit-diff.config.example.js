@@ -28,6 +28,7 @@ export default {
   pr: {
     start: "", // e.g. "pr {branch}"      — checkout/worktree, spin up your session
     done: "", //  e.g. "pr-done {branch}"  — tear it down when you're finished
+    worktreeRefreshMinutes: 2, // auto-refresh the worktrees pane (0 disables)
   },
 };
 

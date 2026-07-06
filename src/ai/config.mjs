@@ -31,7 +31,9 @@ export const DEFAULTS = {
   // shell command you run to start / finish work on a PR. Tokens {branch} {base}
   // {number} {repo} {title} {url} are substituted (shell-quoted) before running,
   // and the command runs in your login shell so aliases/functions resolve.
-  pr: { start: "", done: "" },
+  // `worktreeRefreshMinutes` auto-refreshes the worktrees pane on that interval
+  // (0 disables; the list still refreshes on demand with `r`).
+  pr: { start: "", done: "", worktreeRefreshMinutes: 2 },
 };
 
 // The starter file written by `orbit-diff init` and by the first-run auto-scaffold.
@@ -60,6 +62,7 @@ export default {
   pr: {
     start: "", // e.g. "pr {branch}"    — run when you pick a PR to work on
     done: "", //  e.g. "pr-done {branch}" — run when you're finished with it
+    worktreeRefreshMinutes: 2, // auto-refresh the worktrees pane (0 disables)
   },
 };
 `;
@@ -125,6 +128,8 @@ export async function loadConfig() {
   // Commands must be strings; coerce anything else back to the empty default.
   merged.pr.start = typeof merged.pr.start === "string" ? merged.pr.start : "";
   merged.pr.done = typeof merged.pr.done === "string" ? merged.pr.done : "";
+  const wtMin = Number(merged.pr.worktreeRefreshMinutes);
+  merged.pr.worktreeRefreshMinutes = Number.isFinite(wtMin) && wtMin >= 0 ? wtMin : DEFAULTS.pr.worktreeRefreshMinutes;
 
   if (!THINKING_LEVELS.includes(merged.thinkingLevel)) {
     warning = warning || `unknown thinkingLevel "${merged.thinkingLevel}"; using "${DEFAULTS.thinkingLevel}"`;
