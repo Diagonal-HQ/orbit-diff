@@ -33,10 +33,10 @@ export function AskPanel({ messages, draft, asking, width, height }) {
 
   return (
     <Box flexDirection="column" width={width} height={height} borderStyle="round" borderColor="magenta" paddingX={1}>
-      <Text bold color="magenta" wrap="truncate">Ask about this diff / codebase</Text>
+      <Text bold color="magenta" wrap="truncate">Chat about this diff / codebase</Text>
       <Box height={bodyH} flexDirection="column">
         {messages.length === 0 ? (
-          <Text dimColor wrap="wrap">Type a question below. Follow-ups keep the conversation going.</Text>
+          <Text dimColor wrap="wrap">Ask about the diff, or ask for changes — this chat can edit files. Follow-ups keep the conversation going.</Text>
         ) : (
           shown.map((r, i) =>
             r.role === "user" ? (

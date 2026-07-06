@@ -83,7 +83,7 @@ let current = files;
 while (true) {
   const handoff = { doc: null };
   const app = render(
-    <App files={current} source={source} handoff={handoff} activeBg={activeBg} selectBg={selectBg} addBg={addBg} delBg={delBg} />,
+    <App files={current} reloadDiff={() => parseDiff(loadDiff(args))} source={source} handoff={handoff} activeBg={activeBg} selectBg={selectBg} addBg={addBg} delBg={delBg} />,
     { exitOnCtrlC: true, stdout: inPlaceStdout(process.stdout) },
   );
   await app.waitUntilExit();

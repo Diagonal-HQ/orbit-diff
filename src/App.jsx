@@ -21,10 +21,13 @@ import {
 // Modes: "normal" | "files" (filter sidebar) | "lines" (find in changed lines)
 //        "comment" (type an annotation) | "submit" (choose where annotations go)
 //        "review" (AI findings panel) | "ask" (ask the model a question)
-export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg, addBg = FALLBACK.addBg, delBg = FALLBACK.delBg }) {
+export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg, addBg = FALLBACK.addBg, delBg = FALLBACK.delBg }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
+  // The parsed diff, seeded from the prop. Held in state so the chat can edit the
+  // working tree and we can reload it in place (see reloadAfterEdit).
+  const [files, setFiles] = useState(initialFiles);
   const [mode, setMode] = useState("normal");
   const [focus, setFocus] = useState("sidebar");
   const [fileQuery, setFileQuery] = useState("");
@@ -508,6 +511,23 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
       return [...ms.slice(0, -1), { ...last, text: last.text + delta }];
     });
 
+  // The chat just edited the working tree — re-parse the diff and swap it in so the
+  // viewer reflects the new state. selectedFile clamps itself against the reloaded
+  // list; we reset the diff cursor/scroll since line indices may have moved.
+  const reloadAfterEdit = () => {
+    if (!reloadDiff) return;
+    let next;
+    try {
+      next = reloadDiff();
+    } catch (e) {
+      return setToast(`reload failed: ${e.message || e}`);
+    }
+    setFiles(next);
+    setCursor(0);
+    setScroll(0);
+    setToast(next.length === 0 ? "changes applied — nothing left to review" : "changes applied — diff reloaded");
+  };
+
   // Send the typed question into the conversation and stream the answer. The
   // session is created on the first turn and reused for follow-ups, so the model
   // remembers the earlier exchange.
@@ -536,9 +556,10 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
         if (token !== askToken.current) return;
         appendToLastMessage(delta);
       })
-      .then(() => {
+      .then((res) => {
         if (token !== askToken.current) return;
         setAsking(false);
+        if (res?.changed) reloadAfterEdit();
       })
       .catch((e) => {
         if (token !== askToken.current) return;
@@ -843,7 +864,7 @@ function StatusBar({
     return <Bar><Text color="blueBright">AI review</Text><Dim> · ↑↓ move · enter jump · p promote · esc close</Dim></Bar>;
   }
   if (mode === "ask") {
-    return <Bar><Text color="blueBright">ask</Text><Dim> · type a question · enter send · esc close</Dim></Bar>;
+    return <Bar><Text color="blueBright">chat</Text><Dim> · ask or request changes · enter send · esc close</Dim></Bar>;
   }
   if (toast) {
     return <Bar><Text color="green">✓ </Text><Text>{toast}</Text></Bar>;

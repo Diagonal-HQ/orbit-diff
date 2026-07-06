@@ -2,13 +2,14 @@
 // SDK wiring — auth storage, model registry, resource loader, in-memory session —
 // in one place, and exposes two verbs the viewer needs:
 //
-//   reviewFile(file, config)            → raw parsed findings for one file's diff
-//   ask(question, context, config, cb)  → streamed answer to a question
+//   reviewFile(file, config)     → raw parsed findings for one file's diff
+//   startConversation(config)    → a live multi-turn chat that can edit the tree
 //
-// Reviews run with NO tools (single-shot over the diff we hand it). Q&A runs with
-// READ-ONLY tools (read/grep/find/ls) so the model can explore the repo to answer,
-// but can never edit, write, or run shell commands. Credentials are resolved by
-// Pi from its own env vars / ~/.pi/agent/auth.json — orbit-diff never sees a key.
+// Reviews run with NO tools (single-shot over the diff we hand it). The chat runs
+// with the full read/write tool set (read/grep/find/ls/edit/write/bash) so it can
+// both explore the repo and apply changes the user asks for. Tools execute with no
+// approval gate — that's by design here. Credentials are resolved by Pi from its
+// own env vars / ~/.pi/agent/auth.json — orbit-diff never sees a key.
 
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
@@ -31,11 +32,18 @@ import {
 // its message verbatim; anything unexpected keeps its original message.
 export class AiError extends Error {}
 
-const ASK_SYSTEM_PROMPT = `You are a code assistant embedded in a terminal diff viewer.
-Answer the user's question about the diff under review and the surrounding codebase.
-You have read-only tools (read, grep, find, ls) — use them to check the actual code
-before answering rather than guessing. Be concise and concrete; cite file paths and
-line numbers where useful. You cannot edit files or run commands.`;
+// The conversation ("chat") system prompt — this session can edit the working
+// tree, so it's told to. It runs with the full read/write tool set below.
+const CHAT_SYSTEM_PROMPT = `You are a coding assistant embedded in a terminal diff viewer.
+The user is reviewing a diff and may ask questions about it or ask you to make changes.
+You have full read/write tools (read, edit, write, bash, grep, find, ls): use them to
+inspect the code and to apply any changes the user asks for. Keep edits focused and
+minimal, then briefly explain what you changed, citing file paths and line numbers.`;
+
+// Tools the chat session may use, and the subset that mutates the working tree — a
+// call to any of these means the on-disk diff changed and the viewer should reload.
+const CHAT_TOOLS = ["read", "grep", "find", "ls", "edit", "write", "bash"];
+const MUTATING_TOOLS = new Set(["edit", "write", "bash"]);
 
 let _registry; // { authStorage, modelRegistry } — built once per process
 function registry() {
@@ -111,14 +119,17 @@ async function makeSession(config, { systemPrompt, tools }) {
 }
 
 // Drive one prompt to completion, streaming text deltas to `onDelta`, and return
-// the final assistant text.
-async function runPrompt(session, promptText, onDelta) {
+// the final assistant text. `onMutate(toolName)` fires the first time a working-
+// tree-mutating tool (edit/write/bash) runs, so callers can reload afterwards.
+async function runPrompt(session, promptText, onDelta, onMutate) {
   let text = "";
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
       const delta = event.assistantMessageEvent.delta;
       text += delta;
       if (onDelta) onDelta(delta);
+    } else if (event.type === "tool_execution_start" && MUTATING_TOOLS.has(event.toolName)) {
+      onMutate?.(event.toolName);
     }
   });
   try {
@@ -145,34 +156,27 @@ export async function reviewFile(file, config) {
   }
 }
 
-// Ask a question about the diff/codebase. `context` is prepended (the diff summary
-// / current file), `onDelta` streams the answer as it arrives. Returns final text.
-export async function ask(question, context, config, onDelta) {
-  let session;
-  try {
-    session = await makeSession(config, { systemPrompt: ASK_SYSTEM_PROMPT, tools: ["read", "grep", "find", "ls"] });
-    const prompt = context ? `${context}\n\nQuestion: ${question}` : question;
-    return await runPrompt(session, prompt, onDelta);
-  } catch (err) {
-    throw asAiError(err, config);
-  } finally {
-    session?.dispose();
-  }
-}
-
-// Start a multi-turn Q&A conversation. Unlike `ask`, the session is kept alive so
-// each `send` remembers the previous turns (and any files it read) — the user can
-// chat back and forth. Call `dispose` when the conversation is closed. Session
-// creation is deferred to the first `send` so config/auth errors surface there.
-export async function startConversation(config) {
+// Start a multi-turn chat about the diff/codebase. The session is kept alive so
+// each `send` remembers the previous turns (and any files it read), and it runs
+// with write tools, so it can edit the working tree when asked. Each
+// `send` resolves to `{ text, changed }` — `changed` is true when the turn ran a
+// mutating tool, the signal for the caller to reload the diff. Call `dispose` when
+// the chat is closed. Session creation is deferred to the first `send` so
+// config/auth errors surface there. Synchronous: it just returns the handle; the
+// async work happens in `send`.
+export function startConversation(config) {
   let session;
   return {
     async send(text, onDelta) {
       try {
         if (!session) {
-          session = await makeSession(config, { systemPrompt: ASK_SYSTEM_PROMPT, tools: ["read", "grep", "find", "ls"] });
+          session = await makeSession(config, { systemPrompt: CHAT_SYSTEM_PROMPT, tools: CHAT_TOOLS });
         }
-        return await runPrompt(session, text, onDelta);
+        let changed = false;
+        const out = await runPrompt(session, text, onDelta, () => {
+          changed = true;
+        });
+        return { text: out, changed };
       } catch (err) {
         throw asAiError(err, config);
       }

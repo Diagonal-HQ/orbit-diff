@@ -55,11 +55,13 @@ async function reviewOne(file, config) {
   return makeFindings(file, raw);
 }
 
-// Start a multi-turn Q&A about the diff/codebase. The first question is grounded
+// Start a multi-turn chat about the diff/codebase. The first question is grounded
 // with the diff context (changed-file list + focused file); follow-ups go straight
-// to the live session, which already remembers the context and prior turns. Returns
-// a handle: `ask(question, onDelta)` streams each answer, `dispose()` ends it.
-export async function startConversation(files, focused, config) {
+// to the live session, which already remembers the context and prior turns. The
+// session can edit the working tree when asked. Returns a handle: `ask(question,
+// onDelta)` streams each answer and resolves to `{ text, changed }` (`changed` true
+// when the turn edited files, so the caller can reload); `dispose()` ends it.
+export function startConversation(files, focused, config) {
   const convo = startClientConversation(config);
   const context = buildContext(files, focused);
   let first = true;
