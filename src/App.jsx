@@ -21,7 +21,7 @@ import {
 // Modes: "normal" | "files" (filter sidebar) | "lines" (find in changed lines)
 //        "comment" (type an annotation) | "submit" (choose where annotations go)
 //        "review" (AI findings panel) | "ask" (ask the model a question)
-export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg }) {
+export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg, addBg = FALLBACK.addBg, delBg = FALLBACK.delBg }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
@@ -781,6 +781,8 @@ export function App({ files, source, handoff, activeBg = FALLBACK.activeBg, sele
           selectionRange={selectionRange}
           activeBg={activeBg}
           selectBg={selectBg}
+          addBg={addBg}
+          delBg={delBg}
         />
       </Box>
       <StatusBar

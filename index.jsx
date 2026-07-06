@@ -72,7 +72,7 @@ const source = args.length ? args.join(" ") : defaultSource();
 // dark-tuned defaults when the terminal doesn't answer. Runs before render so
 // stdin is free for the OSC 11 round-trip; Ink reclaims it afterward.
 const { detectLineColors } = await import("./src/theme.mjs");
-const { activeBg, selectBg } = await detectLineColors();
+const { activeBg, selectBg, addBg, delBg } = await detectLineColors();
 
 // The review loop. render the viewer; when it exits, either the user quit (done)
 // or they pressed `r` to apply their annotations, leaving a change-request doc in
@@ -83,7 +83,7 @@ let current = files;
 while (true) {
   const handoff = { doc: null };
   const app = render(
-    <App files={current} source={source} handoff={handoff} activeBg={activeBg} selectBg={selectBg} />,
+    <App files={current} source={source} handoff={handoff} activeBg={activeBg} selectBg={selectBg} addBg={addBg} delBg={delBg} />,
     { exitOnCtrlC: true, stdout: inPlaceStdout(process.stdout) },
   );
   await app.waitUntilExit();

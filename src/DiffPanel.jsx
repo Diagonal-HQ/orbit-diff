@@ -18,7 +18,7 @@ const pad = (used, width) => " ".repeat(Math.max(0, width - used));
 // theme.mjs). A parent Text's background shows through its child fg colors (fg
 // resets don't clear it), so the whole line — syntax-highlighted content and
 // all — sits on the band, filled to the edge by a trailing pad.
-export function DiffPanel({ file, scroll, cursor, focused, width, height, query, matchLines, currentLine, annotatedLines, selectionRange, activeBg, selectBg }) {
+export function DiffPanel({ file, scroll, cursor, focused, width, height, query, matchLines, currentLine, annotatedLines, selectionRange, activeBg, selectBg, addBg, delBg }) {
   const inner = Math.max(1, height - 3); // border (2) + title (1)
   const contentWidth = width - 2; // borders
 
@@ -45,8 +45,12 @@ export function DiffPanel({ file, scroll, cursor, focused, width, height, query,
         const onCursor = idx === cursor;
         const inSel = selectionRange && idx >= selectionRange.lo && idx <= selectionRange.hi;
         const annotated = annotatedLines && annotatedLines.has(idx);
-        const bg = onCursor ? activeBg : inSel ? selectBg : undefined;
-        const fill = onCursor || inSel; // pad to width so the band spans the row
+        // Every added/removed row gets a subtle green/red background band so the
+        // diff reads at a glance; the cursor and selection bands take priority
+        // when they land on a row.
+        const typeBg = l.type === "add" ? addBg : l.type === "del" ? delBg : undefined;
+        const bg = onCursor ? activeBg : inSel ? selectBg : typeBg;
+        const fill = bg !== undefined; // pad to width so the band spans the row
         // Marker column: the cursor (▸) wins the cell; otherwise a ● flags an
         // annotated line. An annotated line tints the marker green either way.
         const marker = onCursor ? "▸" : annotated ? "●" : " ";
