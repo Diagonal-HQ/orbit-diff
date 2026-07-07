@@ -80,10 +80,10 @@ export function buildReviewWindow({ worktreePath, name, setupCmd, claudeCmd, dif
   if (!window || !diffPane) return { error: "couldn't parse tmux window/pane ids" };
   tmux(["set-option", "-w", "-t", window, "@orbit_wt", worktreePath]);
 
-  // 2. Split a pane ABOVE the diff pane (-b) for the top row; give the diff pane
-  //    the larger share (top row 45%).
+  // 2. Split a pane ABOVE the diff pane (-b) for the top row; the top row gets
+  //    1/3 so the diff pane (bottom) keeps 2/3.
   const top = tmux([
-    "split-window", "-b", "-v", "-l", "45%", "-t", diffPane, "-c", worktreePath,
+    "split-window", "-b", "-v", "-l", "33%", "-t", diffPane, "-c", worktreePath,
     "-P", "-F", "#{pane_id}",
   ]);
   if (top.status !== 0) return { error: (top.stderr || "tmux split-window failed").trim(), window };
