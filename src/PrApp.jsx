@@ -121,6 +121,13 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
     wasInFlight.current = inFlight;
   }, [inFlight]);
 
+  // Auto-dismiss the top-right status toast so it doesn't linger forever.
+  useEffect(() => {
+    if (!toast) return;
+    const id = setTimeout(() => setToast(null), 5000);
+    return () => clearTimeout(id);
+  }, [toast]);
+
   const loading = prs === null;
   const all = prs || [];
   // Branch → worktree, for both the PR indicator and the worktrees pane's PR tags.
@@ -303,13 +310,20 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
 
   return (
     <Box flexDirection="column" width={cols} height={rows}>
-      <Box height={1}>
-        <Text wrap="truncate">
-          {" "}
-          <Text bold color="magenta">orbit-diff</Text>
-          <Text dimColor> · PRs for me</Text>
-          <Text dimColor>  ({countLabel})</Text>
-        </Text>
+      <Box height={1} width={cols}>
+        <Box flexGrow={1} flexShrink={1} minWidth={0}>
+          <Text wrap="truncate">
+            {" "}
+            <Text bold color="magenta">orbit-diff</Text>
+            <Text dimColor> · PRs for me</Text>
+            <Text dimColor>  ({countLabel})</Text>
+          </Text>
+        </Box>
+        {toast ? (
+          <Box flexShrink={0} marginLeft={2}>
+            <Text color="yellow" wrap="truncate">{toast} </Text>
+          </Box>
+        ) : null}
       </Box>
 
       <Box height={topH}>
@@ -345,7 +359,7 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
       {mode === "search" ? (
         <SearchBar query={query} count={list.length} />
       ) : (
-        <StatusBar toast={toast} focus={paneFocus} setupCmd={setupCmd} inTmux={!!process.env.TMUX} />
+        <StatusBar focus={paneFocus} setupCmd={setupCmd} inTmux={!!process.env.TMUX} />
       )}
     </Box>
   );
@@ -650,16 +664,10 @@ function SearchBar({ query, count }) {
   );
 }
 
-function StatusBar({ toast, focus, setupCmd, inTmux }) {
-  if (toast) {
-    return (
-      <Box height={1}>
-        <Text wrap="truncate"> <Text color="yellow">{toast}</Text></Text>
-      </Box>
-    );
-  }
+function StatusBar({ focus, setupCmd, inTmux }) {
   // Action hints depend on which pane is focused: start/open on the PR list,
-  // focus/finish on the worktrees pane.
+  // focus/finish on the worktrees pane. (Transient status shows in the header's
+  // top-right, so the shortcuts stay visible here.)
   const actions =
     focus === "worktrees" ? (
       <>
