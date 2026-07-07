@@ -46,6 +46,7 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
   const [sessions, setSessions] = useState(() => safeCall(loadSessions));
   const [selected, setSelected] = useState(0);
   const [selectedWt, setSelectedWt] = useState(0);
+  const [descScroll, setDescScroll] = useState(0); // scroll offset into the description pane
   const [focus, setFocus] = useState("prs"); // "prs" | "worktrees"
   const [toast, setToast] = useState(null);
   const [mode, setMode] = useState("normal"); // "normal" | "search"
@@ -242,6 +243,22 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
     openInBrowser(matched);
   };
 
+  // Layout geometry (computed here so the key handler can measure the
+  // description pane for scrolling). Leave the last terminal row untouched:
+  // filling it makes the terminal scroll, which forces Ink into a full-screen
+  // clear+repaint (the flash). The body sits between the header and status bars.
+  const bodyH = Math.max(6, rows - 3);
+  const topH = Math.max(4, Math.min(Math.floor(bodyH * 0.45), Math.max(list.length, worktrees.length) + 3));
+  const lowerH = Math.max(3, bodyH - topH);
+  // One shared column split, so the top and bottom panes line up vertically.
+  const leftW = Math.max(24, Math.floor(cols * 0.6));
+  const rightW = Math.max(20, cols - leftW);
+  const ov = current ? details[current.number] : undefined;
+
+  // Reset the description scroll whenever the highlighted PR changes.
+  const currentNumber = current ? current.number : null;
+  useEffect(() => setDescScroll(0), [currentNumber]);
+
   useInput((input, key) => {
     // ---- Search mode: capture typing into the filter ----
     if (mode === "search") {
@@ -290,6 +307,15 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
 
     // ---- PR list focused ----
     if (loading || !list.length) return;
+    // Ctrl-d / Ctrl-u scroll the description pane (half a viewport at a time),
+    // clamped to what's actually scrollable for this PR's overview.
+    if (key.ctrl && (input === "d" || input === "u")) {
+      const { bodyLines, contentW, bodyRoom } = descMetrics(ov, leftW, lowerH);
+      const { maxScroll } = layoutDescription(bodyLines, contentW, bodyRoom, descScroll);
+      if (maxScroll <= 0) return;
+      const step = Math.max(1, Math.floor(bodyRoom / 2));
+      return setDescScroll((s) => Math.max(0, Math.min(s + (input === "d" ? step : -step), maxScroll)));
+    }
     if (key.downArrow || input === "j") return setSelected((s) => clampIdx(s + 1, list.length));
     if (key.upArrow || input === "k") return setSelected((s) => clampIdx(s - 1, list.length));
     if (input === "g") return setSelected(0);
@@ -297,17 +323,6 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
     if (key.return) return startPr(current);
     if (input === "o") return openInBrowser(current);
   });
-
-  // Leave the last terminal row untouched: filling it makes the terminal scroll,
-  // which forces Ink into a full-screen clear+repaint (the flash). The body sits
-  // between the header and status bars within that rows-1 budget.
-  const bodyH = Math.max(6, rows - 3);
-  const topH = Math.max(4, Math.min(Math.floor(bodyH * 0.45), Math.max(list.length, worktrees.length) + 3));
-  const lowerH = Math.max(3, bodyH - topH);
-  // One shared column split, so the top and bottom panes line up vertically.
-  const leftW = Math.max(24, Math.floor(cols * 0.6));
-  const rightW = Math.max(20, cols - leftW);
-  const ov = current ? details[current.number] : undefined;
 
   const countLabel = loading ? "loading…" : query ? `${list.length}/${all.length}` : `${all.length} open`;
 
@@ -355,7 +370,7 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
       </Box>
 
       <Box height={lowerH}>
-        <OverviewPane pr={current} overview={ov} width={leftW} height={lowerH} />
+        <OverviewPane pr={current} overview={ov} scroll={descScroll} width={leftW} height={lowerH} />
         <MetaPane pr={current} overview={ov} width={rightW} height={lowerH} />
       </Box>
 
@@ -472,43 +487,83 @@ function WorktreePane({ worktrees, prByBranch, sessionByPath, selected, focused,
   );
 }
 
-// Lower-left pane: the highlighted PR's overview summary + description.
-function OverviewPane({ pr, overview, width, height }) {
+// Wrapped-row count for one markdown source line at a given inner width.
+const descRowsFor = (segs, contentW) =>
+  Math.max(1, Math.ceil(segs.reduce((n, s) => n + (s.text ? s.text.length : 0), 0) / contentW));
+
+// The description's raw ingredients: its wrapped lines, the inner width, and how
+// many wrapped rows are available for it. Shared by the pane (to render) and the
+// key handler (to measure how far it can scroll).
+export function descMetrics(ov, width, height) {
+  const loaded = ov && !ov.error;
+  const labels = loaded && Array.isArray(ov.labels) ? ov.labels.map((l) => l.name) : [];
+  const bodyLines = loaded && ov.body ? markdownLines(ov.body) : [];
+  // Rows the summary block above the description consumes: title + author/branch,
+  // a spacer, the status lines, plus the "— description —" header + its spacer.
+  const summaryRows = loaded ? 1 + 2 + (labels.length > 0 ? 1 : 0) : 1 + 1;
+  const bodyRoom = Math.max(0, height - 2 - 2 - summaryRows - 2);
+  const contentW = Math.max(1, width - 4); // border (2) + paddingX 1 each side (2)
+  return { bodyLines, contentW, bodyRoom, labels, loaded };
+}
+
+// Lay out the (possibly scrolled) description within `bodyRoom` wrapped rows.
+// Returns the clamped start line, the source lines to show, how many are hidden
+// above/below, and the max scroll offset (so the caller can clamp the same way).
+export function layoutDescription(bodyLines, contentW, bodyRoom, scroll) {
+  const n = bodyLines.length;
+  if (n === 0 || bodyRoom < 1) return { start: 0, shown: [], above: 0, below: 0, maxScroll: 0 };
+  const rowsAt = (i) => descRowsFor(bodyLines[i], contentW);
+
+  const total = bodyLines.reduce((sum, _, i) => sum + rowsAt(i), 0);
+  let maxScroll = 0;
+  if (total > bodyRoom) {
+    // Once scrolled, a top "↑ more" hint costs a row, so the deepest useful
+    // start is the smallest one whose tail [start..n) fits in bodyRoom - 1.
+    let acc = 0;
+    let maxStart = n;
+    for (let i = n - 1; i >= 0; i--) {
+      acc += rowsAt(i);
+      if (acc > bodyRoom - 1) break;
+      maxStart = i;
+    }
+    maxScroll = Math.max(0, maxStart);
+  }
+  const start = Math.max(0, Math.min(scroll, maxScroll));
+  const above = start;
+
+  // Greedily fill from `start`, reserving a row for each hint that will show.
+  const fill = (budget) => {
+    const shown = [];
+    let used = 0;
+    for (let i = start; i < n; i++) {
+      const r = rowsAt(i);
+      if (used + r > budget) break;
+      used += r;
+      shown.push(bodyLines[i]);
+    }
+    return shown;
+  };
+  const topR = above > 0 ? 1 : 0;
+  let shown = fill(bodyRoom - topR);
+  let below = n - start - shown.length;
+  if (below > 0) {
+    shown = fill(bodyRoom - topR - 1); // reserve a row for the "↓ more" hint too
+    below = n - start - shown.length;
+  }
+  return { start, shown, above, below, maxScroll };
+}
+
+// Lower-left pane: the highlighted PR's overview summary + description. The
+// description scrolls with Ctrl-d / Ctrl-u (offset passed in as `scroll`).
+function OverviewPane({ pr, overview, scroll = 0, width, height }) {
   if (!pr) {
     return <Box width={width} height={height} borderStyle="round" borderColor="gray" paddingX={1} />;
   }
 
   const ov = overview; // undefined = not requested, null = loading, obj = ready
-  const loaded = ov && !ov.error;
-  const labels = loaded && Array.isArray(ov.labels) ? ov.labels.map((l) => l.name) : [];
-  // The description renders as markdown: one styled line per source line, so the
-  // row accounting below (bodyRoom/slice) stays exact.
-  const bodyLines = loaded && ov.body ? markdownLines(ov.body) : [];
-
-  // Rows the summary block above the description consumes, counted exactly so
-  // the description never overflows the fixed pane height (overflow garbles the
-  // frame). 2 = title + author/branch; then a spacer + the status lines.
-  const summaryRows = loaded ? 1 + 2 + (labels.length > 0 ? 1 : 0) : 1 + 1;
-  const bodyRoom = Math.max(0, height - 2 - 2 - summaryRows - 2);
+  const { bodyLines, contentW, bodyRoom, labels, loaded } = descMetrics(ov, width, height);
   const showBody = bodyLines.length > 0 && bodyRoom >= 1;
-
-  // Lines wrap, so a single source line can take several terminal rows. Budget
-  // by *wrapped* rows (text length / inner width) and keep whole lines until the
-  // budget runs out, reserving one row for the "… more" note when we truncate.
-  const contentW = Math.max(1, width - 4); // border (2) + paddingX 1 each side (2)
-  const rowsFor = (segs) =>
-    Math.max(1, Math.ceil(segs.reduce((n, s) => n + (s.text ? s.text.length : 0), 0) / contentW));
-  const totalRows = bodyLines.reduce((n, segs) => n + rowsFor(segs), 0);
-  const budget = totalRows > bodyRoom ? Math.max(0, bodyRoom - 1) : bodyRoom;
-  const bodyShown = [];
-  let usedRows = 0;
-  for (const segs of bodyLines) {
-    const r = rowsFor(segs);
-    if (usedRows + r > budget) break;
-    usedRows += r;
-    bodyShown.push(segs);
-  }
-  const hiddenLines = bodyLines.length - bodyShown.length;
+  const { shown: bodyShown, above, below } = layoutDescription(bodyLines, contentW, bodyRoom, scroll);
 
   return (
     <Box flexDirection="column" width={width} height={height} borderStyle="round" borderColor="gray" paddingX={1}>
@@ -546,7 +601,10 @@ function OverviewPane({ pr, overview, width, height }) {
 
       {showBody && (
         <Box marginTop={1} flexDirection="column">
-          <Text dimColor>— description —</Text>
+          <Text dimColor wrap="truncate">
+            — description —{(above > 0 || below > 0) ? <Text dimColor>  (^u/^d scroll)</Text> : null}
+          </Text>
+          {above > 0 && <Text dimColor>↑ {above} more line{above === 1 ? "" : "s"}</Text>}
           {bodyShown.map((segs, i) => (
             <Text key={i} wrap="wrap">
               {segs.map((s, j) => (
@@ -564,7 +622,7 @@ function OverviewPane({ pr, overview, width, height }) {
               ))}
             </Text>
           ))}
-          {hiddenLines > 0 && <Text dimColor>… {hiddenLines} more line{hiddenLines === 1 ? "" : "s"}</Text>}
+          {below > 0 && <Text dimColor>↓ {below} more line{below === 1 ? "" : "s"}</Text>}
         </Box>
       )}
     </Box>
