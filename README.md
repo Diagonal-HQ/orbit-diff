@@ -99,7 +99,8 @@ orbit-diff main..feature    # a branch range, PR-style
 | `x` | delete the annotation on the cursor line (or the highlighted one in the rail's annotations list) |
 | `a` | jump the rail cursor to the annotations list (then `↑↓`/`j` `k` navigate, `Enter` jumps to it in the diff) |
 | `y` | copy all annotations to the clipboard as a change-request prompt for Claude Code |
-| `r` | open the **submit** picker: apply via Claude Code, post to the GitHub PR (when one exists), or copy |
+| `r` | open the **submit** picker: apply via Claude Code (or *send to the Claude pane* in a managed review window), post to the GitHub PR (when one exists), or copy |
+| `R` | reload the diff — pick up edits Claude made in its pane |
 | `A` | **AI review** of the diff — findings stream into a side panel (`↑↓`/`j` `k` move · `Enter` jump to it · `p` promote to an annotation · `Esc` close) |
 | `?` | **ask** the model a question about the diff / codebase — the answer streams into a panel (`Esc` close) |
 | `Enter` | rail → focus diff · find → jump to first match |
@@ -118,8 +119,8 @@ constructs (block comments, template strings) may not carry state across lines.
 
 A second mode that turns orbit-diff into a lightweight PR manager for the
 **current repo**. It lists the open, non-draft PRs that are either assigned to
-you or awaiting your review, and lets you drive a configured command against the
-one you pick.
+you or awaiting your review, and spins up a whole review environment for the one
+you pick.
 
 ```bash
 orbit-diff prs              # (alias: orbit-diff pr)
@@ -127,9 +128,10 @@ orbit-diff prs              # (alias: orbit-diff pr)
 
 - **Top-left** — the PRs waiting on you, each with a review-state glyph
   (`✓` approved · `✗` changes requested · `●` review required · `○` no reviews).
-  A `⧉` marks any PR whose branch is already checked out in a local worktree.
+  A `⧉` marks a PR that already has a worktree; a spinner marks one whose review
+  environment is still provisioning; `EV<n>` shows its instance once it reports.
 - **Top-right** — the repo's git worktrees, each tagged with its matching PR
-  number when the branch lines up with one of the PRs.
+  number and env instance (spinner while provisioning, `✗` if setup failed).
 - **Bottom-left** — an overview of the highlighted PR: review decision,
   mergeability, diff size, labels, and the description.
 - **Bottom-right** — who's on the hook: requested reviewers, assignees, and the
@@ -141,37 +143,77 @@ stream in when `gh` answers.
 | Key | Action |
 | --- | --- |
 | `↑↓` / `j` `k` | move · `g` / `G` jump to top / bottom |
-| `Enter` / `o` | **start** — run your `pr.start` command for this PR |
-| `d` | **done** — run your `pr.done` command for this PR |
+| `Enter` | **start** a review for this PR (or focus its window if already open) |
+| `o` | open the PR (or the worktree's PR) in the browser |
+| `Tab` | switch focus between the PR list and the worktrees pane |
+| `d` (worktrees) | **finish** — tear the review down (see below) |
+| `Enter` (worktrees) | jump to that worktree's tmux window |
 | `/` | filter the list (fuzzy match on number / title / branch) |
 | `r` | refresh the list + worktrees |
 | `q` / `Esc` / `Ctrl-c` | quit (`Esc` clears an active filter first) |
 
-`start` and `done` run their command **in the background** — orbit-diff keeps
-running and you stay in the list. Each run's output is redirected to a log under
-`~/.cache/orbit-diff/…` (the path is shown in a toast). The worktrees pane
-auto-refreshes every `pr.worktreeRefreshMinutes` (default 2; set 0 to disable),
-so a worktree your `start` command creates appears on its own — or press `r` to
-refresh everything immediately.
+### The review flow
 
-Configure the two commands in `~/.config/orbit-diff/config.js`. The tokens
-`{branch}` `{base}` `{number}` `{repo}` `{title}` `{url}` are substituted
-(shell-quoted), and the command runs in your login shell so aliases/functions
-resolve:
+Starting a PR (`Enter`) makes orbit-diff **own the whole review environment** —
+you stay in the PR list (the new window opens in the background) and a spinner on
+the PR line tracks progress. Under the hood it:
+
+1. **creates a git worktree** for the PR branch (fetching it if it's remote-only),
+2. **opens a detached tmux window** split into three panes —
+
+   ```
+   ┌──────── setup ────────┬──────── claude ───────┐
+   ├───────────────── orbit-diff ──────────────────┤
+   └────────────────────────────────────────────────┘
+   ```
+
+   top-left runs your `setup` command inside the worktree, top-right runs
+   `claude` (a live session, ready to talk to), and the bottom, full-width pane
+   runs `orbit-diff` on the PR's diff;
+3. **tracks it all** — the PR ↔ worktree ↔ tmux panes ↔ env instance — in a
+   session registry under `~/.cache/orbit-diff/sessions/` (nothing is written
+   into the repo).
+
+Because the diff viewer and Claude run side by side, sending annotations to
+Claude (the **submit** picker's *"Send to Claude pane"*) routes them into that
+open session via `tmux send-keys` instead of taking over the diff — then press
+`R` in the viewer to reload once Claude has edited. Outside a managed window the
+old behaviour stands (orbit-diff steps aside for a fresh `claude`).
+
+**Report your env instance back.** Your `setup` command should end by telling
+orbit-diff what it provisioned, which stops the spinner and tags the PR with the
+instance:
+
+```bash
+orbit-diff env-report <instance> [--url <url>] [--status ready|failed]
+```
+
+Run from inside the worktree, it's matched to that worktree's session by path.
+
+**Finishing** (`d` on a worktree) runs your `done` command, closes the tmux
+window, and drops the session. If `done` is unset, orbit-diff removes the git
+worktree itself.
+
+Configure it in `~/.config/orbit-diff/config.js`. The tokens `{branch}` `{base}`
+`{number}` `{repo}` `{title}` `{url}` are substituted (shell-quoted), and
+commands run in your login shell so aliases/functions resolve:
 
 ```js
 export default {
   // …model/provider settings…
   pr: {
-    start: "pr {branch}",       // e.g. create a worktree + open your session
-    done: "pr-done {branch}",   // e.g. tear the worktree down
+    setup: "make dev-env {branch} && orbit-diff env-report $EV_INSTANCE",
+    claude: "claude",           // command run in the top-right pane
+    done: "tear-down {branch}", // unset ⇒ orbit-diff removes the worktree itself
+    worktreeDir: "",            // "" ⇒ sibling "<repo>-worktrees/<branch>"
     worktreeRefreshMinutes: 2,  // auto-refresh the worktrees pane (0 disables)
   },
 };
 ```
 
-Leave either empty to disable that action. Requires the [`gh`](https://cli.github.com)
-CLI, authenticated (`gh auth login`) with a GitHub remote.
+Starting a review needs to be **inside tmux**. Requires the
+[`gh`](https://cli.github.com) CLI, authenticated (`gh auth login`) with a GitHub
+remote. (`pr.start` is still honoured as a legacy alias for `pr.setup`.)
 
 ## AI review & Q&A
 

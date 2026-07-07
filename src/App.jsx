@@ -8,6 +8,7 @@ import { DiffPanel } from "./DiffPanel.jsx";
 import { AskPanel } from "./AskPanel.jsx";
 import { useDimensions } from "./useDimensions.mjs";
 import { copyViaOSC52 } from "./clipboard.mjs";
+import { sendLine, paneAlive } from "./tmux.mjs";
 import { FALLBACK } from "./theme.mjs";
 import { detectPR, submitAnnotations } from "./github.mjs";
 import { findingToAnnotation, reserveFindingIds } from "./ai/findings.mjs";
@@ -31,7 +32,7 @@ import { fileDigest } from "./ai/cache.mjs";
 //        "reviewConfirm" (confirm kicking off an AI review) | "ask" (ask the model)
 // AI review findings are no longer a separate panel — they stream into the rail's
 // "AI Review" section (below Annotations) and navigate like everything else.
-export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg, addBg = FALLBACK.addBg, delBg = FALLBACK.delBg }) {
+export function App({ files: initialFiles, reloadDiff, source, handoff, claudePane = null, activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg, addBg = FALLBACK.addBg, delBg = FALLBACK.delBg }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
@@ -371,10 +372,49 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
     exit();
   };
 
+  // In a managed review window, hand the change request to the Claude pane
+  // that's already open beside us: drop the doc on disk and poke that pane with a
+  // one-line "apply the requests in <path>" via tmux send-keys. Claude stays a
+  // live session you keep talking to, and the diff viewer never gives up its
+  // pane. Press R to reload the diff once Claude has finished editing.
+  const sendToClaudePane = () => {
+    const withText = annotations.filter((a) => a.text.trim());
+    if (withText.length === 0) {
+      setToast("no annotations to send");
+      return;
+    }
+    if (!claudePane || !paneAlive(claudePane)) {
+      // The pane went away — fall back to the quit-and-handoff path.
+      setToast("Claude pane is gone — applying via a fresh session");
+      return runChangeRequest();
+    }
+    const doc = buildChangeRequest(annotations, files, source);
+    let path;
+    try {
+      path = changeRequestPath();
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, doc);
+    } catch (e) {
+      setToast(`couldn't write change request: ${e.message}`);
+      return;
+    }
+    const ok = sendLine(claudePane, `Please apply the change requests in ${path}`);
+    if (!ok) {
+      setToast("couldn't reach the Claude pane — try again or pick a fresh session");
+      return;
+    }
+    const n = withText.length;
+    setToast(`sent ${n} request${n === 1 ? "" : "s"} → Claude pane · press R to reload when done`);
+  };
+
   // The submit picker's rows. "Post to GitHub PR" only appears once a PR has
   // been found for the branch — otherwise the option is simply absent.
   const submitOptions = useMemo(() => {
-    const opts = [{ key: "claude", label: "Apply via Claude Code", hint: "hands off to an interactive session" }];
+    const opts = [
+      claudePane
+        ? { key: "claude", label: "Send to Claude pane", hint: "the Claude session already open beside the diff" }
+        : { key: "claude", label: "Apply via Claude Code", hint: "hands off to an interactive session" },
+    ];
     if (pr) {
       opts.push({
         key: "github",
@@ -384,7 +424,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
     }
     opts.push({ key: "clipboard", label: "Copy to clipboard", hint: "+ saved under ~/.cache/orbit-diff/" });
     return opts;
-  }, [pr]);
+  }, [pr, claudePane]);
 
   // Open the picker — but only when there's something to submit, matching the
   // old direct-action behaviour of toasting on an empty set.
@@ -426,7 +466,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
     const opt = submitOptions[clamp(submitSel, 0, submitOptions.length - 1)];
     setMode("normal");
     if (!opt) return;
-    if (opt.key === "claude") return runChangeRequest();
+    if (opt.key === "claude") return claudePane ? sendToClaudePane() : runChangeRequest();
     if (opt.key === "github") return postToGitHub();
     if (opt.key === "clipboard") return copyRequests();
   };
@@ -779,6 +819,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
     }
     if (input === "y") return copyRequests();
     if (input === "r") return openSubmit();
+    if (input === "R") return reloadAfterEdit(); // pick up edits Claude made in its pane
     if (input === "A") return handleAiReview();
     if (input === "?") return openAsk();
 

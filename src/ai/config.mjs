@@ -27,13 +27,29 @@ export const DEFAULTS = {
   model: "claude-opus-4-8",
   thinkingLevel: "medium",
   review: { concurrency: 4 },
-  // `orbit-diff prs` PR-management commands. Empty by default — set these to the
-  // shell command you run to start / finish work on a PR. Tokens {branch} {base}
-  // {number} {repo} {title} {url} are substituted (shell-quoted) before running,
-  // and the command runs in your login shell so aliases/functions resolve.
-  // `worktreeRefreshMinutes` auto-refreshes the worktrees pane on that interval
-  // (0 disables; the list still refreshes on demand with `r`).
-  pr: { start: "", done: "", worktreeRefreshMinutes: 2 },
+  // `orbit-diff prs` PR-management. Starting a PR now creates the worktree and a
+  // three-pane tmux review window itself (setup · claude · orbit-diff); these
+  // commands plug your own tooling into that flow. Tokens {branch} {base}
+  // {number} {repo} {title} {url} are substituted (shell-quoted); commands run in
+  // your login shell so aliases/functions resolve.
+  //   setup   — runs in the top-left pane inside the fresh worktree (build env,
+  //             deps, etc). Report the provisioned instance back to orbit-diff
+  //             with `orbit-diff env-report <instance>` as its last step.
+  //   claude  — runs in the top-right pane (default `claude`).
+  //   done    — teardown when you finish; if unset, orbit-diff removes the
+  //             worktree itself.
+  //   worktreeDir — where to create worktrees. Tokens {repo} {branch} {base}
+  //             {number}; `~` expands. Empty = sibling `<repo>-worktrees/<branch>`.
+  //   start   — legacy alias for `setup` (still honoured when `setup` is empty).
+  //   worktreeRefreshMinutes auto-refreshes the worktrees pane (0 disables).
+  pr: {
+    start: "",
+    setup: "",
+    claude: "claude",
+    done: "",
+    worktreeDir: "",
+    worktreeRefreshMinutes: 2,
+  },
 };
 
 // The starter file written by `orbit-diff init` and by the first-run auto-scaffold.
@@ -56,12 +72,19 @@ export default {
   review: {
     concurrency: 4, // how many files to review in parallel (1–8)
   },
-  // \`orbit-diff prs\` — commands to start / finish work on a PR. Tokens
-  // {branch} {base} {number} {repo} {title} {url} are substituted (shell-quoted).
-  // Runs in your login shell, so shell aliases/functions work.
+  // \`orbit-diff prs\` — starting a PR creates the worktree + a three-pane tmux
+  // review window (setup · claude · orbit-diff) for you. These plug your tooling
+  // into that flow. Tokens {branch} {base} {number} {repo} {title} {url} are
+  // shell-quoted; commands run in your login shell so aliases/functions work.
   pr: {
-    start: "", // e.g. "pr {branch}"    — run when you pick a PR to work on
-    done: "", //  e.g. "pr-done {branch}" — run when you're finished with it
+    setup: "", //  e.g. "make dev-env {branch}" — runs in the top-left pane inside
+    //             the new worktree. End it with \`orbit-diff env-report <instance>\`
+    //             so orbit-diff can track the provisioned environment.
+    claude: "claude", // command run in the top-right pane
+    done: "", //   e.g. "tear-down {branch}" — run when finished; if unset,
+    //             orbit-diff removes the worktree itself
+    worktreeDir: "", // where worktrees go; tokens {repo} {branch} {base} {number},
+    //             \`~\` expands. Empty = sibling "<repo>-worktrees/<branch>"
     worktreeRefreshMinutes: 2, // auto-refresh the worktrees pane (0 disables)
   },
 };
@@ -127,7 +150,10 @@ export async function loadConfig() {
   };
   // Commands must be strings; coerce anything else back to the empty default.
   merged.pr.start = typeof merged.pr.start === "string" ? merged.pr.start : "";
+  merged.pr.setup = typeof merged.pr.setup === "string" ? merged.pr.setup : "";
+  merged.pr.claude = typeof merged.pr.claude === "string" && merged.pr.claude.trim() ? merged.pr.claude : "claude";
   merged.pr.done = typeof merged.pr.done === "string" ? merged.pr.done : "";
+  merged.pr.worktreeDir = typeof merged.pr.worktreeDir === "string" ? merged.pr.worktreeDir : "";
   const wtMin = Number(merged.pr.worktreeRefreshMinutes);
   merged.pr.worktreeRefreshMinutes = Number.isFinite(wtMin) && wtMin >= 0 ? wtMin : DEFAULTS.pr.worktreeRefreshMinutes;
 

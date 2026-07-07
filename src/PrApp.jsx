@@ -4,6 +4,17 @@ import { useDimensions } from "./useDimensions.mjs";
 import { prOverview, renderCommand, checkState } from "./pr.mjs";
 import { tildeify } from "./paths.mjs";
 import { markdownLines } from "./markdown.mjs";
+import { Spinner } from "./Spinner.jsx";
+
+// Load worktrees / sessions defensively — both are cheap local reads, but a
+// transient failure should keep the last good list rather than blow up the TUI.
+const safeCall = (fn) => {
+  try {
+    return fn() || [];
+  } catch {
+    return [];
+  }
+};
 
 // PR-management TUI for the current repo.
 //
@@ -11,17 +22,17 @@ import { markdownLines } from "./markdown.mjs";
 //   ├──────────── overview + description ──────────────┼─ reviewers/ ─┤
 //   └──────────────────────────────────────────────────┴─ checks ────┘
 //
-// The list + worktrees are fetched inside the component (`loadPRs` /
-// `loadWorktrees`), so the shell paints instantly and the data streams in when
-// `gh` answers; `r` refetches in place. Starting a PR (`enter`) or finishing it
-// (`d`) runs the configured `pr.start` / `pr.done` command in the background
-// (via the `runPr` callback) — it does NOT take over the terminal — and a toast
-// reports where its output is logged. `o` opens the PR in the browser, `tab`
-// moves focus between the PR list and the worktrees pane (where `enter` opens
-// the worktree in a tmux window — focusing an existing one if it's already
-// open — `o` opens its PR in the browser, and `d` runs `pr.done` against it),
-// and `/` filters the list.
-export function PrApp({ loadPRs, loadWorktrees, runPr, openUrl, openWorktree, config }) {
+// The list, worktrees, and review sessions are fetched inside the component
+// (`loadPRs` / `loadWorktrees` / `loadSessions`), so the shell paints instantly
+// and the data streams in when `gh` answers; `r` refetches in place. Starting a
+// PR (`enter`) hands off to `startReview` — it creates the worktree and a
+// detached three-pane tmux review window in the background (you stay in the
+// list) and a spinner tracks provisioning until the setup script's
+// `orbit-diff env-report` lands, at which point the PR is tagged with its env
+// instance. `o` opens the PR in the browser, `tab` moves focus to the worktrees
+// pane (where `enter` jumps to a worktree's tmux window, `o` opens its PR, and
+// `d` calls `finishReview` to tear it down), and `/` filters the list.
+export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finishReview, openUrl, openWorktree, config }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
@@ -30,6 +41,9 @@ export function PrApp({ loadPRs, loadWorktrees, runPr, openUrl, openWorktree, co
   const [prs, setPrs] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [worktrees, setWorktrees] = useState([]);
+  // Review sessions orbit-diff owns (from the session registry): drives the
+  // per-PR "provisioning" spinner and the env-instance tags.
+  const [sessions, setSessions] = useState(() => safeCall(loadSessions));
   const [selected, setSelected] = useState(0);
   const [selectedWt, setSelectedWt] = useState(0);
   const [focus, setFocus] = useState("prs"); // "prs" | "worktrees"
@@ -52,11 +66,8 @@ export function PrApp({ loadPRs, loadWorktrees, runPr, openUrl, openWorktree, co
     setLoadError(null);
     requested.current = new Set();
     setDetails({});
-    try {
-      setWorktrees(loadWorktrees() || []);
-    } catch {
-      setWorktrees([]);
-    }
+    setWorktrees(safeCall(loadWorktrees));
+    setSessions(safeCall(loadSessions));
     loadPRs().then(
       (loaded) => {
         if (!live) return;
@@ -73,28 +84,35 @@ export function PrApp({ loadPRs, loadWorktrees, runPr, openUrl, openWorktree, co
     return () => {
       live = false;
     };
-  }, [loadPRs, loadWorktrees, reloadTick]);
+  }, [loadPRs, loadWorktrees, loadSessions, reloadTick]);
 
   // Auto-refresh just the worktrees pane on an interval (a cheap local git call,
   // so we poll it without touching the PR list). 0 disables.
   const refreshMin = config.pr.worktreeRefreshMinutes;
   useEffect(() => {
     if (!refreshMin || refreshMin <= 0) return;
-    const id = setInterval(() => {
-      try {
-        setWorktrees(loadWorktrees() || []);
-      } catch {
-        /* keep the last good list */
-      }
-    }, refreshMin * 60_000);
+    const id = setInterval(() => setWorktrees(safeCall(loadWorktrees)), refreshMin * 60_000);
     return () => clearInterval(id);
   }, [refreshMin, loadWorktrees]);
+
+  // Poll the session registry so the "provisioning" spinner flips to the env
+  // instance as soon as the setup script's `orbit-diff env-report` lands. Tick
+  // fast while something is provisioning; idle back to a slow heartbeat.
+  const anyProvisioning = sessions.some((s) => s.status === "provisioning");
+  useEffect(() => {
+    const period = anyProvisioning ? 1500 : 20_000;
+    const id = setInterval(() => setSessions(safeCall(loadSessions)), period);
+    return () => clearInterval(id);
+  }, [anyProvisioning, loadSessions]);
 
   const loading = prs === null;
   const all = prs || [];
   // Branch → worktree, for both the PR indicator and the worktrees pane's PR tags.
   const wtByBranch = new Map(worktrees.filter((w) => w.branch).map((w) => [w.branch, w]));
   const prByBranch = new Map(all.map((p) => [p.headRefName, p.number]));
+  // Branch/path → session, for the spinner and env-instance tags.
+  const sessionByBranch = new Map(sessions.filter((s) => s.branch).map((s) => [s.branch, s]));
+  const sessionByPath = new Map(sessions.map((s) => [s.worktreePath, s]));
 
   const list = filterPRs(all, query);
   const current = list[selected] || null;
@@ -126,17 +144,28 @@ export function PrApp({ loadPRs, loadWorktrees, runPr, openUrl, openWorktree, co
     );
   }, [current]);
 
-  const startCmd = current ? renderCommand(config.pr.start, current) : null;
+  const setupCmd = current ? renderCommand(config.pr.setup || config.pr.start, current) : null;
 
-  // Run a configured command against a target (a PR, or a worktree turned into a
-  // PR-like object). `label` is what the toast names it.
-  const run = (action, target, label) => {
-    if (!target) return;
-    const res = runPr(action, target);
+  // Reflect registry/worktree changes immediately after an action, rather than
+  // waiting for the next poll tick.
+  const refreshLocal = () => {
+    setSessions(safeCall(loadSessions));
+    setWorktrees(safeCall(loadWorktrees));
+  };
+
+  // `enter` on a PR: orbit-diff creates the worktree, records the session, and
+  // opens the detached three-pane review window (or focuses an existing one).
+  const startPr = (pr) => {
+    if (!pr) return;
+    const res = startReview(pr);
     if (!res.ok) return setToast(res.error);
-    const verb = action === "start" ? "started" : "finishing";
-    const where = res.logPath ? ` · log ${tildeify(res.logPath)}` : "";
-    setToast(`▶ ${verb} ${label} in background${where} · r to refresh`);
+    refreshLocal();
+    if (res.focused) return setToast(`⧉ focused review window for #${pr.number}`);
+    setToast(
+      res.provisioning
+        ? `▶ #${pr.number}: worktree + review window opened · provisioning…`
+        : `▶ #${pr.number}: review window opened in background`,
+    );
   };
 
   // `o` on a PR opens it in the system's default browser.
@@ -148,20 +177,25 @@ export function PrApp({ loadPRs, loadWorktrees, runPr, openUrl, openWorktree, co
     setToast(`↗ opened #${pr.number} in browser`);
   };
 
-  // `d` on a worktree runs pr.done against that worktree. If its branch matches a
-  // listed PR, run against the full PR (so {number}/{title}/{url} resolve too);
-  // otherwise synthesize a minimal target carrying just the branch + path.
-  const runWorktreeDone = (wt) => {
+  // `d` on a worktree finishes the review: teardown command (or worktree removal
+  // when unset), closes the tmux window, drops the session. If its branch matches
+  // a listed PR, target the full PR so {number}/{title}/{url} resolve too.
+  const finishWorktree = (wt) => {
     if (!wt) return;
     const prNum = wt.branch ? prByBranch.get(wt.branch) : undefined;
     const matched = prNum ? all.find((p) => p.number === prNum) : null;
     const target = matched
       ? { ...matched, path: wt.path }
       : { headRefName: wt.branch || "", path: wt.path };
-    const label = matched
-      ? `#${matched.number}`
-      : wt.branch || tildeify(wt.path) || "worktree";
-    run("done", target, label);
+    const label = matched ? `#${matched.number}` : wt.branch || tildeify(wt.path) || "worktree";
+    const res = finishReview(target);
+    refreshLocal();
+    if (!res.ok) return setToast(res.error || `couldn't finish ${label}`);
+    const bits = [];
+    if (res.ranDone) bits.push("teardown running");
+    if (res.killed) bits.push("window closed");
+    if (res.removed) bits.push("worktree removed");
+    setToast(`✓ finished ${label}${bits.length ? " · " + bits.join(" · ") : ""}`);
   };
 
   // `enter` on a worktree opens it in a tmux window (or focuses the existing
@@ -226,7 +260,7 @@ export function PrApp({ loadPRs, loadWorktrees, runPr, openUrl, openWorktree, co
       if (input === "G") return setSelectedWt(worktrees.length - 1);
       if (key.return) return openWorktreeWindow(worktrees[wtSel]);
       if (input === "o") return openWorktreePr(worktrees[wtSel]);
-      if (input === "d") return runWorktreeDone(worktrees[wtSel]);
+      if (input === "d") return finishWorktree(worktrees[wtSel]);
       return;
     }
 
@@ -236,7 +270,7 @@ export function PrApp({ loadPRs, loadWorktrees, runPr, openUrl, openWorktree, co
     if (key.upArrow || input === "k") return setSelected((s) => clampIdx(s - 1, list.length));
     if (input === "g") return setSelected(0);
     if (input === "G") return setSelected(list.length - 1);
-    if (key.return) return run("start", current, current ? `#${current.number}` : "");
+    if (key.return) return startPr(current);
     if (input === "o") return openInBrowser(current);
   });
 
@@ -271,12 +305,14 @@ export function PrApp({ loadPRs, loadWorktrees, runPr, openUrl, openWorktree, co
           query={query}
           searching={mode === "search"}
           wtBranches={wtByBranch}
+          sessionByBranch={sessionByBranch}
           width={leftW}
           height={topH}
         />
         <WorktreePane
           worktrees={worktrees}
           prByBranch={prByBranch}
+          sessionByPath={sessionByPath}
           selected={wtSel}
           focused={paneFocus === "worktrees"}
           width={rightW}
@@ -292,13 +328,7 @@ export function PrApp({ loadPRs, loadWorktrees, runPr, openUrl, openWorktree, co
       {mode === "search" ? (
         <SearchBar query={query} count={list.length} />
       ) : (
-        <StatusBar
-          toast={toast}
-          focus={paneFocus}
-          startSet={!!config.pr.start.trim()}
-          doneSet={!!config.pr.done.trim()}
-          startCmd={startCmd}
-        />
+        <StatusBar toast={toast} focus={paneFocus} setupCmd={setupCmd} inTmux={!!process.env.TMUX} />
       )}
     </Box>
   );
@@ -306,7 +336,7 @@ export function PrApp({ loadPRs, loadWorktrees, runPr, openUrl, openWorktree, co
 
 // Top-left rail: one row per PR — review-state glyph, a `⧉` when the branch is
 // already checked out in a local worktree, #number, and the title.
-function PrList({ prs, loading, error, selected, focused, query, searching, wtBranches, width, height }) {
+function PrList({ prs, loading, error, selected, focused, query, searching, wtBranches, sessionByBranch, width, height }) {
   const listRoom = Math.max(1, height - 2 - 1); // minus border rows and the header
   const start = Math.max(0, Math.min(selected - Math.floor(listRoom / 2), Math.max(0, prs.length - listRoom)));
   const window = prs.slice(start, start + listRoom);
@@ -329,17 +359,27 @@ function PrList({ prs, loading, error, selected, focused, query, searching, wtBr
         const active = idx === selected;
         const g = reviewGlyph(pr.reviewDecision);
         const hasWt = wtBranches.has(pr.headRefName);
+        const sess = sessionByBranch.get(pr.headRefName);
+        const provisioning = sess && sess.status === "provisioning";
+        // When the env is provisioned, tag the row with its instance number.
+        const envTag = sess && sess.status === "ready" && sess.envInstance != null ? ` EV${sess.envInstance}` : "";
         const num = `#${pr.number}`;
         const author = pr.author?.login ? `@${pr.author.login}` : "";
-        // Consumed before the title: glyph(2) + wt(2) + "#num "(num.length+1),
+        // Consumed before the title: indicator(2) + "#num "(num.length+1) + envTag,
         // then the trailing " @author" if present.
         const authorRoom = author ? author.length + 1 : 0;
-        const title = truncate(pr.title, Math.max(4, room - num.length - 5 - authorRoom));
+        const title = truncate(pr.title, Math.max(4, room - num.length - 5 - envTag.length - authorRoom));
         return (
           <Text key={pr.number} inverse={active} wrap="truncate">
             <Text color={g.color}>{g.char} </Text>
-            <Text color="blueBright">{hasWt ? "⧉ " : "  "}</Text>
-            <Text dimColor>{num} </Text>
+            {provisioning ? (
+              <Text color="yellow"><Spinner color="yellow" /> </Text>
+            ) : (
+              <Text color="blueBright">{hasWt || sess ? "⧉ " : "  "}</Text>
+            )}
+            <Text dimColor>{num}</Text>
+            {envTag ? <Text color="cyan">{envTag}</Text> : null}
+            <Text> </Text>
             <Text color={active ? "white" : undefined}>{title}</Text>
             {author ? <Text dimColor> {author}</Text> : null}
           </Text>
@@ -351,7 +391,7 @@ function PrList({ prs, loading, error, selected, focused, query, searching, wtBr
 
 // Top-right pane: the repo's git worktrees, tagged with the matching PR number
 // when a worktree's branch is one of the PRs above.
-function WorktreePane({ worktrees, prByBranch, selected, focused, width, height }) {
+function WorktreePane({ worktrees, prByBranch, sessionByPath, selected, focused, width, height }) {
   const listRoom = Math.max(1, height - 2 - 1); // minus border rows and the header
   const overflow = worktrees.length > listRoom;
   const room2 = overflow ? Math.max(1, listRoom - 1) : listRoom; // reserve a row for "… N more"
@@ -373,12 +413,22 @@ function WorktreePane({ worktrees, prByBranch, selected, focused, width, height 
           ? "(bare)"
           : w.branch || (w.head ? `detached ${w.head.slice(0, 7)}` : "(detached)");
         const prNum = w.branch ? prByBranch.get(w.branch) : undefined;
-        const tag = prNum ? ` #${prNum}` : "";
+        const sess = sessionByPath.get(w.path);
+        const provisioning = sess && sess.status === "provisioning";
+        // A short suffix: the PR number and, once known, the env instance.
+        const env = sess && sess.status === "ready" && sess.envInstance != null ? ` EV${sess.envInstance}` : "";
+        const failed = sess && sess.status === "failed";
+        const tag = `${prNum ? ` #${prNum}` : ""}${env}`;
         return (
           <Text key={w.path + idx} inverse={active} wrap="truncate">
-            <Text color="blueBright">⧉  </Text>
+            {provisioning ? (
+              <Text color="yellow"><Spinner color="yellow" />  </Text>
+            ) : (
+              <Text color={failed ? "red" : "blueBright"}>{failed ? "✗  " : "⧉  "}</Text>
+            )}
             <Text color={prNum ? "cyan" : undefined}>{truncate(label, Math.max(4, room - 3 - tag.length))}</Text>
-            {prNum ? <Text dimColor>{tag}</Text> : null}
+            {prNum ? <Text dimColor>{` #${prNum}`}</Text> : null}
+            {env ? <Text color="cyan">{env}</Text> : null}
           </Text>
         );
       })}
@@ -582,7 +632,7 @@ function SearchBar({ query, count }) {
   );
 }
 
-function StatusBar({ toast, focus, startSet, doneSet, startCmd }) {
+function StatusBar({ toast, focus, setupCmd, inTmux }) {
   if (toast) {
     return (
       <Box height={1}>
@@ -591,15 +641,15 @@ function StatusBar({ toast, focus, startSet, doneSet, startCmd }) {
     );
   }
   // Action hints depend on which pane is focused: start/open on the PR list,
-  // done on the worktrees pane.
+  // focus/finish on the worktrees pane.
   const actions =
     focus === "worktrees" ? (
       <>
-        <Text bold>enter</Text> tmux  <Text bold>o</Text> open  <Text bold>d</Text> {doneSet ? "done" : <Text dimColor>done (unset)</Text>}
+        <Text bold>enter</Text> tmux  <Text bold>o</Text> open  <Text bold>d</Text> finish
       </>
     ) : (
       <>
-        <Text bold>enter</Text> {startSet ? "start" : <Text dimColor>start (unset)</Text>}  <Text bold>o</Text> open
+        <Text bold>enter</Text> {inTmux ? "start" : <Text dimColor>start (needs tmux)</Text>}  <Text bold>o</Text> open
       </>
     );
   return (
@@ -607,7 +657,7 @@ function StatusBar({ toast, focus, startSet, doneSet, startCmd }) {
       <Text wrap="truncate">
         {" "}
         <Text dimColor>↑↓/jk</Text> move  <Text bold>tab</Text> pane  {actions}  <Text bold>/</Text> search  <Text bold>r</Text> refresh  <Text bold>q</Text> quit
-        {focus !== "worktrees" && startCmd ? <Text dimColor>   ↵ {startCmd}</Text> : null}
+        {focus !== "worktrees" && setupCmd ? <Text dimColor>   ⚙ {setupCmd}</Text> : null}
       </Text>
     </Box>
   );

@@ -36,6 +36,33 @@ export function listWorktrees() {
   return out;
 }
 
+// Create a worktree at `path` checked out to `branch`. If the branch already
+// exists locally, check it out; otherwise fetch it and create a local branch
+// tracking origin/<branch>. Returns { ok } or { ok:false, error }.
+export function addWorktree(path, branch) {
+  // Best-effort fetch so a PR branch that only exists on the remote is available
+  // (ignore failure — a local-only branch won't be on origin).
+  git(["fetch", "origin", branch]);
+  const local = git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).status === 0;
+  const res = local
+    ? git(["worktree", "add", path, branch])
+    : git(["worktree", "add", "--track", "-b", branch, path, `origin/${branch}`]);
+  if (res.status !== 0) {
+    return { ok: false, error: (res.stderr || "git worktree add failed").trim() };
+  }
+  return { ok: true, path };
+}
+
+// Remove a worktree (force, so a dirty tree still goes). Returns { ok } /
+// { ok:false, error }.
+export function removeWorktree(path) {
+  const res = git(["worktree", "remove", "--force", path]);
+  if (res.status !== 0) {
+    return { ok: false, error: (res.stderr || "git worktree remove failed").trim() };
+  }
+  return { ok: true };
+}
+
 // Load a patch to view.
 //
 // With explicit args, they pass straight through to `git diff` (e.g. a range

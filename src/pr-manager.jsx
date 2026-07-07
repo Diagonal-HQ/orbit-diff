@@ -6,14 +6,23 @@
 
 import React from "react";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, openSync, closeSync } from "node:fs";
+import { mkdirSync, openSync, closeSync, existsSync } from "node:fs";
+import { dirname, basename } from "node:path";
 import { render } from "ink";
 import { PrApp } from "./PrApp.jsx";
 import { inPlaceStdout } from "./inplace-stdout.mjs";
-import { listReviewPRs, renderCommand } from "./pr.mjs";
-import { listWorktrees } from "./git.mjs";
+import { listReviewPRs, renderCommand, renderPath } from "./pr.mjs";
+import { listWorktrees, addWorktree, removeWorktree } from "./git.mjs";
 import { loadConfig, CONFIG_HINT } from "./ai/config.mjs";
-import { orbitDir } from "./paths.mjs";
+import { orbitDir, repoRoot } from "./paths.mjs";
+import {
+  inTmux,
+  findWindowByWorktree,
+  focusWindow,
+  killWindow,
+  buildReviewWindow,
+} from "./tmux.mjs";
+import { sessionKey, writeSession, updateSession, deleteSession, listSessions } from "./session.mjs";
 
 // Filesystem-safe slug for a branch name in a log filename.
 function slug(s) {
@@ -118,8 +127,113 @@ export async function runPrManager() {
     }
   };
 
+  // Where a PR's worktree goes: the configured `pr.worktreeDir` template, else a
+  // sibling directory `<repo>-worktrees/<branch>` next to the main checkout.
+  const worktreePathFor = (pr) => {
+    const tmpl = config.pr.worktreeDir;
+    if (tmpl && tmpl.trim()) return renderPath(tmpl, pr);
+    const root = repoRoot();
+    return `${dirname(root)}/${basename(root)}-worktrees/${slug(pr.headRefName)}`;
+  };
+
+  // Start reviewing a PR: create its worktree (if new), record the session, and
+  // open the detached three-pane review window (setup · claude · orbit-diff).
+  // Re-starting a PR whose window is already open just focuses it. Returns
+  // { ok, focused?, path, provisioning? } or { ok:false, error }.
+  const startReview = (pr) => {
+    if (!pr) return { ok: false, error: "no PR selected" };
+    if (!inTmux()) return { ok: false, error: "not inside tmux — start tmux to open a review window" };
+
+    const wtPath = worktreePathFor(pr);
+
+    // Already open for this worktree? Focus it instead of duplicating.
+    const existing = findWindowByWorktree(wtPath);
+    if (existing) {
+      focusWindow(existing);
+      return { ok: true, focused: true, path: wtPath };
+    }
+
+    // Create the worktree if it isn't there yet.
+    if (!existsSync(wtPath)) {
+      const add = addWorktree(wtPath, pr.headRefName);
+      if (!add.ok) return { ok: false, error: add.error };
+    }
+
+    const key = sessionKey(wtPath);
+    writeSession({
+      key,
+      pr: pr.number,
+      branch: pr.headRefName,
+      base: pr.baseRefName,
+      repo: pr.repo,
+      url: pr.url,
+      title: pr.title,
+      worktreePath: wtPath,
+      status: "provisioning",
+      createdAt: new Date().toISOString(),
+    });
+
+    // `setup` (falling back to the legacy `start`) runs in the top-left pane; it
+    // should call `orbit-diff env-report` when the environment is ready.
+    const setupCmd = renderCommand(config.pr.setup || config.pr.start, { ...pr, path: wtPath }) || "";
+    const claudeCmd = renderCommand(config.pr.claude, { ...pr, path: wtPath }) || "claude";
+
+    const built = buildReviewWindow({
+      worktreePath: wtPath,
+      name: windowName({ path: wtPath, branch: pr.headRefName }),
+      setupCmd,
+      claudeCmd,
+      diffCmd: "orbit-diff",
+    });
+    if (built.error) {
+      updateSession(key, { status: "failed", error: built.error, window: built.window || null });
+      return { ok: false, error: built.error };
+    }
+    // With no setup command there's nothing to provision, so it's ready now;
+    // otherwise it stays "provisioning" until `env-report` flips it.
+    updateSession(key, {
+      window: built.window,
+      panes: built.panes,
+      status: setupCmd ? "provisioning" : "ready",
+    });
+    return { ok: true, path: wtPath, provisioning: !!setupCmd };
+  };
+
+  // Finish a review: run the configured teardown (`pr.done`) in the background,
+  // kill the tmux window, drop the session record, and — only when `pr.done` is
+  // unset (so nothing else will) — remove the git worktree. `target` carries at
+  // least { headRefName, path }. Returns { ok, ...outcome } or { ok:false, error }.
+  const finishReview = (target) => {
+    const path = target && target.path;
+    const doneSet = !!config.pr.done.trim();
+    const done = doneSet ? runPr("done", target) : { ok: true };
+    let killed = false;
+    let removed = false;
+    let removeError = null;
+    if (path) {
+      const win = findWindowByWorktree(path);
+      if (win) killed = killWindow(win);
+      if (!doneSet) {
+        const rm = removeWorktree(path);
+        removed = rm.ok;
+        removeError = rm.ok ? null : rm.error;
+      }
+      deleteSession(sessionKey(path));
+    }
+    return { ok: done.ok, error: done.ok ? removeError : done.error, ranDone: doneSet, killed, removed };
+  };
+
   const app = render(
-    <PrApp loadPRs={listReviewPRs} loadWorktrees={listWorktrees} runPr={runPr} openUrl={openUrl} openWorktree={openWorktree} config={config} />,
+    <PrApp
+      loadPRs={listReviewPRs}
+      loadWorktrees={listWorktrees}
+      loadSessions={listSessions}
+      startReview={startReview}
+      finishReview={finishReview}
+      openUrl={openUrl}
+      openWorktree={openWorktree}
+      config={config}
+    />,
     { exitOnCtrlC: true, stdout: inPlaceStdout(process.stdout) },
   );
   await app.waitUntilExit();

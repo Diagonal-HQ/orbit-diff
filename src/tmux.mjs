@@ -1,0 +1,114 @@
+// tmux plumbing for the PR-review flow: building the three-pane review window,
+// finding a worktree's window (so re-opening focuses instead of duplicating),
+// and poking the live Claude pane with a change request.
+//
+// Every pane orbit-diff creates is tagged with two user options:
+//   @orbit_wt   <worktree path>   (on the window — matches the old behaviour)
+//   @orbit_role setup|claude|diff (on each pane — so the diff viewer can find
+//                                  its Claude sibling to send annotations to)
+
+import { spawnSync } from "node:child_process";
+
+function tmux(args) {
+  return spawnSync("tmux", args, { encoding: "utf8" });
+}
+
+export function inTmux() {
+  return !!process.env.TMUX;
+}
+
+// The window id (e.g. "@7") tagged with this worktree path, or null. Scans all
+// sessions so it works no matter which one you're driving from.
+export function findWindowByWorktree(path) {
+  const res = tmux(["list-windows", "-a", "-F", "#{window_id}\t#{@orbit_wt}"]);
+  if (res.status !== 0 || !res.stdout) return null;
+  for (const line of res.stdout.split("\n")) {
+    const tab = line.indexOf("\t");
+    if (tab < 0) continue;
+    if (line.slice(tab + 1) === path) return line.slice(0, tab);
+  }
+  return null;
+}
+
+export function focusWindow(id) {
+  return tmux(["select-window", "-t", id]).status === 0;
+}
+
+export function killWindow(id) {
+  return tmux(["kill-window", "-t", id]).status === 0;
+}
+
+// Run a command in a pane by typing it and pressing Enter. The pane's shell
+// reads it whenever it's ready, so this is safe to call right after creating it.
+export function runInPane(pane, cmd) {
+  return tmux(["send-keys", "-t", pane, cmd, "Enter"]).status === 0;
+}
+
+// Send a line of input to a pane already running an interactive program (e.g.
+// the Claude REPL), submitting it with Enter. Returns false if the pane is gone.
+export function sendLine(pane, text) {
+  return tmux(["send-keys", "-t", pane, text, "Enter"]).status === 0;
+}
+
+// Is this pane still alive?
+export function paneAlive(pane) {
+  const res = tmux(["list-panes", "-a", "-F", "#{pane_id}"]);
+  if (res.status !== 0 || !res.stdout) return false;
+  return res.stdout.split("\n").includes(pane);
+}
+
+// Build the detached three-pane review window for a worktree:
+//
+//   ┌──────────── setup ───────────┬──────── claude ───────┐
+//   ├──────────────────────── orbit-diff ──────────────────┤
+//   └───────────────────────────────────────────────────────┘
+//
+// Created with `new-window -d`, so it never steals the current view. Returns
+// { window, panes: { setup, claude, diff } } or { error } (with `window` set if
+// the window was created before a later step failed, so the caller can record
+// it for cleanup).
+export function buildReviewWindow({ worktreePath, name, setupCmd, claudeCmd, diffCmd }) {
+  if (!inTmux()) return { error: "not inside tmux — start tmux to open a review window" };
+
+  // 1. New detached window; its single pane becomes the bottom (diff) pane.
+  const win = tmux([
+    "new-window", "-d", "-P", "-F", "#{window_id}\t#{pane_id}",
+    "-n", name || "review", "-c", worktreePath,
+  ]);
+  if (win.status !== 0) return { error: (win.stderr || "tmux new-window failed").trim() };
+  const [window, diffPane] = win.stdout.trim().split("\t");
+  if (!window || !diffPane) return { error: "couldn't parse tmux window/pane ids" };
+  tmux(["set-option", "-w", "-t", window, "@orbit_wt", worktreePath]);
+
+  // 2. Split a pane ABOVE the diff pane (-b) for the top row; give the diff pane
+  //    the larger share (top row 45%).
+  const top = tmux([
+    "split-window", "-b", "-v", "-l", "45%", "-t", diffPane, "-c", worktreePath,
+    "-P", "-F", "#{pane_id}",
+  ]);
+  if (top.status !== 0) return { error: (top.stderr || "tmux split-window failed").trim(), window };
+  const setupPane = top.stdout.trim();
+
+  // 3. Split the top row left|right → Claude to the right of setup.
+  const right = tmux([
+    "split-window", "-h", "-t", setupPane, "-c", worktreePath, "-P", "-F", "#{pane_id}",
+  ]);
+  if (right.status !== 0) return { error: (right.stderr || "tmux split-window failed").trim(), window };
+  const claudePane = right.stdout.trim();
+
+  // Tag panes by role so the diff viewer can find the Claude pane later.
+  tmux(["set-option", "-p", "-t", setupPane, "@orbit_role", "setup"]);
+  tmux(["set-option", "-p", "-t", claudePane, "@orbit_role", "claude"]);
+  tmux(["set-option", "-p", "-t", diffPane, "@orbit_role", "diff"]);
+
+  // Seed each pane's command.
+  if (setupCmd) runInPane(setupPane, setupCmd);
+  if (claudeCmd) runInPane(claudePane, claudeCmd);
+  if (diffCmd) runInPane(diffPane, diffCmd);
+
+  // Land on the diff pane when the user later focuses this window — that's the
+  // review surface, and where annotations get sent to Claude from.
+  tmux(["select-pane", "-t", diffPane]);
+
+  return { window, panes: { setup: setupPane, claude: claudePane, diff: diffPane } };
+}

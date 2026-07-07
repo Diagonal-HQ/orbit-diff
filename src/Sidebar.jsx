@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from "react";
+import React from "react";
 import { Box, Text } from "ink";
 import { annotationLabel } from "./annotations.mjs";
 import { severityColor, findingLoc } from "./ai/findings.mjs";
+import { Spinner } from "./Spinner.jsx";
 
 const STATUS_GLYPH = {
   added: { char: "A", color: "green" },
@@ -153,16 +154,6 @@ export function Sidebar({
 // A small braille throbber that owns its own frame state, so only this glyph
 // re-renders on each tick — the rest of the rail (and the diff) stays put and
 // Ink keeps its in-place update path.
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-function Spinner({ color }) {
-  const [i, setI] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => setI((n) => (n + 1) % SPINNER_FRAMES.length), 80);
-    return () => clearInterval(t);
-  }, []);
-  return <Text color={color}>{SPINNER_FRAMES[i]}</Text>;
-}
-
 // First index of a scroll window that keeps `selected` in view, clamped so the
 // window never runs past either end of a `count`-long list.
 function clampStart(selected, rows, count) {

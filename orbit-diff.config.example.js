@@ -21,13 +21,29 @@ export default {
     concurrency: 4, // how many files to review in parallel (1–8)
   },
   // `orbit-diff prs` — a PR manager for the current repo. It lists the open,
-  // non-draft PRs assigned to you or awaiting your review; pick one to run
-  // `start`, or mark it done to run `done`. Tokens {branch} {base} {number}
-  // {repo} {title} {url} are substituted (shell-quoted) before the command runs
-  // in your login shell (so aliases/functions resolve). Leave empty to disable.
+  // non-draft PRs assigned to you or awaiting your review. Picking one (enter)
+  // makes orbit-diff:
+  //   1. create a git worktree for the PR branch,
+  //   2. open a detached tmux review window with three panes —
+  //        ┌─── setup ────┬─── claude ───┐
+  //        ├──────── orbit-diff ─────────┤   (bottom, full width)
+  //        └─────────────────────────────┘
+  //   3. track it all (PR ↔ worktree ↔ panes ↔ env instance) in a session
+  //      registry under ~/.cache/orbit-diff/sessions/ — nothing touches the repo.
+  //
+  // Tokens {branch} {base} {number} {repo} {title} {url} are substituted
+  // (shell-quoted) and commands run in your login shell (aliases/functions work).
   pr: {
-    start: "", // e.g. "pr {branch}"      — checkout/worktree, spin up your session
-    done: "", //  e.g. "pr-done {branch}"  — tear it down when you're finished
+    // Runs in the top-left pane inside the fresh worktree — build the env, install
+    // deps, etc. End it by reporting the provisioned instance back so orbit-diff
+    // can track it and stop the "provisioning" spinner on the PR line:
+    //   orbit-diff env-report <instance> [--url <url>]
+    setup: "", // e.g. "make dev-env {branch} && orbit-diff env-report $EV_INSTANCE"
+    claude: "claude", // command run in the top-right pane
+    done: "", // e.g. "tear-down {branch}" — run when finished; if unset, orbit-diff
+    //            removes the worktree itself
+    worktreeDir: "", // where worktrees go; tokens {repo}{branch}{base}{number}, `~`
+    //                  expands. Empty = sibling "<repo>-worktrees/<branch>".
     worktreeRefreshMinutes: 2, // auto-refresh the worktrees pane (0 disables)
   },
 };

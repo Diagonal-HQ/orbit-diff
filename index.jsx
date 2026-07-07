@@ -29,6 +29,35 @@ if (args[0] === "prs" || args[0] === "pr") {
   await runPrManager();
   process.exit(0);
 }
+// `orbit-diff env-report [instance] [--instance X] [--url U] [--status S] [--error E]`
+// The setup script calls this from inside its worktree once the environment is
+// provisioned, so orbit-diff can record the instance (the "EV" number) against
+// this worktree's review session and stop the "provisioning" spinner.
+if (args[0] === "env-report") {
+  const { repoRoot } = await import("./src/paths.mjs");
+  const { sessionKey, readSession, updateSession } = await import("./src/session.mjs");
+  const rest = args.slice(1);
+  const patch = { status: "ready" };
+  let positional = null;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === "--instance") patch.envInstance = rest[++i];
+    else if (a === "--url") patch.envUrl = rest[++i];
+    else if (a === "--status") patch.status = rest[++i];
+    else if (a === "--error") patch.error = rest[++i];
+    else if (!a.startsWith("--") && positional == null) positional = a;
+  }
+  if (positional != null && patch.envInstance == null) patch.envInstance = positional;
+
+  const root = repoRoot();
+  const key = sessionKey(root);
+  // Upsert so an early/manual call still records the worktree path.
+  if (!readSession(key)) updateSession(key, { worktreePath: root });
+  const rec = updateSession(key, { ...patch, worktreePath: root });
+  const inst = rec.envInstance != null ? ` → instance ${rec.envInstance}` : "";
+  console.log(`orbit-diff: recorded env for ${root}${inst} (status: ${rec.status})`);
+  process.exit(0);
+}
 if (args[0] === "init") {
   const { scaffoldConfig } = await import("./src/ai/config.mjs");
   const force = args.includes("--force") || args.includes("-f");
@@ -74,6 +103,23 @@ const source = args.length ? args.join(" ") : defaultSource();
 const { detectLineColors } = await import("./src/theme.mjs");
 const { activeBg, selectBg, addBg, delBg } = await detectLineColors();
 
+// Are we the diff pane of a managed review window? If this worktree has a
+// review session with a live Claude pane, the viewer routes annotations there
+// (send-keys) instead of quitting to hand off to a fresh `claude`.
+let claudePane = null;
+if (process.env.TMUX) {
+  try {
+    const { repoRoot } = await import("./src/paths.mjs");
+    const { sessionForWorktree } = await import("./src/session.mjs");
+    const { paneAlive } = await import("./src/tmux.mjs");
+    const sess = sessionForWorktree(repoRoot());
+    const pane = sess?.panes?.claude;
+    if (pane && paneAlive(pane)) claudePane = pane;
+  } catch {
+    /* best-effort — fall back to the quit-and-handoff path */
+  }
+}
+
 // The review loop. render the viewer; when it exits, either the user quit (done)
 // or they pressed `r` to apply their annotations, leaving a change-request doc in
 // `handoff.doc`. In that case we hand the *bare* terminal to an interactive
@@ -83,7 +129,7 @@ let current = files;
 while (true) {
   const handoff = { doc: null };
   const app = render(
-    <App files={current} reloadDiff={() => parseDiff(loadDiff(args))} source={source} handoff={handoff} activeBg={activeBg} selectBg={selectBg} addBg={addBg} delBg={delBg} />,
+    <App files={current} reloadDiff={() => parseDiff(loadDiff(args))} source={source} handoff={handoff} claudePane={claudePane} activeBg={activeBg} selectBg={selectBg} addBg={addBg} delBg={delBg} />,
     { exitOnCtrlC: true, stdout: inPlaceStdout(process.stdout) },
   );
   await app.waitUntilExit();
