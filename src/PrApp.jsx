@@ -3,6 +3,7 @@ import { Box, Text, useApp, useInput } from "ink";
 import { useDimensions } from "./useDimensions.mjs";
 import { prOverview, renderCommand, checkState } from "./pr.mjs";
 import { tildeify } from "./paths.mjs";
+import { markdownLines } from "./markdown.mjs";
 
 // PR-management TUI for the current repo.
 //
@@ -395,7 +396,9 @@ function OverviewPane({ pr, overview, width, height }) {
   const ov = overview; // undefined = not requested, null = loading, obj = ready
   const loaded = ov && !ov.error;
   const labels = loaded && Array.isArray(ov.labels) ? ov.labels.map((l) => l.name) : [];
-  const bodyLines = loaded && ov.body ? ov.body.replace(/\r/g, "").trim().split("\n") : [];
+  // The description renders as markdown: one styled line per source line, so the
+  // row accounting below (bodyRoom/slice) stays exact.
+  const bodyLines = loaded && ov.body ? markdownLines(ov.body) : [];
 
   // Rows the summary block above the description consumes, counted exactly so
   // the description never overflows the fixed pane height (overflow garbles the
@@ -442,8 +445,22 @@ function OverviewPane({ pr, overview, width, height }) {
       {showBody && (
         <Box marginTop={1} flexDirection="column">
           <Text dimColor>— description —</Text>
-          {bodyShown.map((line, i) => (
-            <Text key={i} wrap="truncate">{line || " "}</Text>
+          {bodyShown.map((segs, i) => (
+            <Text key={i} wrap="truncate">
+              {segs.map((s, j) => (
+                <Text
+                  key={j}
+                  bold={s.bold}
+                  italic={s.italic}
+                  color={s.color}
+                  dimColor={s.dimColor}
+                  strikethrough={s.strikethrough}
+                  underline={s.underline}
+                >
+                  {s.text}
+                </Text>
+              ))}
+            </Text>
           ))}
           {bodyLines.length > bodyRoom && <Text dimColor>… {bodyLines.length - bodyShown.length} more lines</Text>}
         </Box>
