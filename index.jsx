@@ -29,6 +29,14 @@ if (args[0] === "prs" || args[0] === "pr") {
   await runPrManager();
   process.exit(0);
 }
+// `orbit-diff pr-status` — runs in the review window's status pane, polling
+// the worktree's branch/PR/env state on a timer. Never returns on its own;
+// the pane goes away when the review window is torn down.
+if (args[0] === "pr-status") {
+  const { runPrStatus } = await import("./src/pr-status.mjs");
+  await runPrStatus();
+  process.exit(0);
+}
 // `orbit-diff env-report [instance] [--instance X] [--url U] [--status S] [--error E]`
 // The setup script calls this from inside its worktree once the environment is
 // provisioned, so orbit-diff can record the instance (the "EV" number) against

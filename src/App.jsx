@@ -10,6 +10,7 @@ import { useDimensions } from "./useDimensions.mjs";
 import { copyViaOSC52 } from "./clipboard.mjs";
 import { sendLine, paneAlive } from "./tmux.mjs";
 import { FALLBACK } from "./theme.mjs";
+import { openUrl } from "./platform.mjs";
 import { detectPR, submitAnnotations } from "./github.mjs";
 import { findingToAnnotation, reserveFindingIds } from "./ai/findings.mjs";
 import {
@@ -818,6 +819,11 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       return;
     }
     if (input === "y") return copyRequests();
+    if (input === "o") {
+      if (!pr) return setToast("no PR found for this branch");
+      const res = openUrl(pr.url);
+      return setToast(res.ok ? `↗ opened PR #${pr.number} in browser` : `couldn't open browser: ${res.error}`);
+    }
     if (input === "r") return openSubmit();
     if (input === "R") return reloadAfterEdit(); // pick up edits Claude made in its pane
     if (input === "A") return handleAiReview();
@@ -1032,6 +1038,7 @@ function StatusBar({
         <><Text color="green">c</Text><Dim> note · </Dim><Text color="green">v</Text><Dim> sel · </Dim></>
       )}
       <Text color="green">a</Text><Dim> notes · </Dim>
+      <Text color="green">o</Text><Dim> open PR · </Dim>
       <Text color="blueBright">A</Text><Dim> ai · </Dim>
       <Text color="blueBright">?</Text><Dim> ask · </Dim>
       <Text color="cyan">/</Text><Dim> files · </Dim>

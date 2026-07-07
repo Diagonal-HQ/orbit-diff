@@ -29,9 +29,10 @@ const safeCall = (fn) => {
 // detached three-pane tmux review window in the background (you stay in the
 // list) and a spinner tracks provisioning until the setup script's
 // `orbit-diff env-report` lands, at which point the PR is tagged with its env
-// instance. `o` opens the PR in the browser, `tab` moves focus to the worktrees
-// pane (where `enter` jumps to a worktree's tmux window, `o` opens its PR, and
-// `d` calls `finishReview` to tear it down), and `/` filters the list.
+// instance. `o` opens the PR in the browser, `d` tears its workspace down (when
+// one exists) via `finishReview`, `tab` moves focus to the worktrees pane (where
+// `enter` jumps to a worktree's tmux window, `o` opens its PR, and `d` also
+// tears it down), and `/` filters the list.
 export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finishReview, openUrl, openWorktree, config }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
@@ -322,6 +323,11 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
     if (input === "G") return setSelected(list.length - 1);
     if (key.return) return startPr(current);
     if (input === "o") return openInBrowser(current);
+    if (input === "d") {
+      const wt = current ? wtByBranch.get(current.headRefName) : null;
+      if (!wt) return setToast("no workspace to tear down");
+      return finishWorktree(wt);
+    }
   });
 
   const countLabel = loading ? "loading…" : query ? `${list.length}/${all.length}` : `${all.length} open`;
@@ -736,7 +742,7 @@ function StatusBar({ focus, setupCmd, inTmux }) {
       </>
     ) : (
       <>
-        <Text bold>enter</Text> {inTmux ? "start" : <Text dimColor>start (needs tmux)</Text>}  <Text bold>o</Text> open
+        <Text bold>enter</Text> {inTmux ? "start" : <Text dimColor>start (needs tmux)</Text>}  <Text bold>o</Text> open  <Text bold>d</Text> finish
       </>
     );
   return (

@@ -1,11 +1,12 @@
-// tmux plumbing for the PR-review flow: building the three-pane review window,
+// tmux plumbing for the PR-review flow: building the four-pane review window,
 // finding a worktree's window (so re-opening focuses instead of duplicating),
 // and poking the live Claude pane with a change request.
 //
 // Every pane orbit-diff creates is tagged with two user options:
-//   @orbit_wt   <worktree path>   (on the window — matches the old behaviour)
-//   @orbit_role setup|claude|diff (on each pane — so the diff viewer can find
-//                                  its Claude sibling to send annotations to)
+//   @orbit_wt   <worktree path>          (on the window — matches the old behaviour)
+//   @orbit_role status|setup|claude|diff (on each pane — so the diff viewer can
+//                                         find its Claude sibling to send
+//                                         annotations to)
 
 import { spawnSync } from "node:child_process";
 
@@ -57,17 +58,17 @@ export function paneAlive(pane) {
   return res.stdout.split("\n").includes(pane);
 }
 
-// Build the detached three-pane review window for a worktree:
+// Build the detached four-pane review window for a worktree:
 //
-//   ┌──────────── setup ───────────┬──────── claude ───────┐
-//   ├──────────────────────── orbit-diff ──────────────────┤
-//   └───────────────────────────────────────────────────────┘
+//   ┌─ status ─┬──────── setup ────────┬──────── claude ───────┐
+//   ├───────────────────────── orbit-diff ──────────────────────┤
+//   └──────────────────────────────────────────────────────────┘
 //
 // Created with `new-window -d`, so it never steals the current view. Returns
-// { window, panes: { setup, claude, diff } } or { error } (with `window` set if
-// the window was created before a later step failed, so the caller can record
-// it for cleanup).
-export function buildReviewWindow({ worktreePath, name, setupCmd, claudeCmd, diffCmd }) {
+// { window, panes: { status, setup, claude, diff } } or { error } (with
+// `window` set if the window was created before a later step failed, so the
+// caller can record it for cleanup).
+export function buildReviewWindow({ worktreePath, name, statusCmd, setupCmd, claudeCmd, diffCmd }) {
   if (!inTmux()) return { error: "not inside tmux — start tmux to open a review window" };
 
   // 1. New detached window; its single pane becomes the bottom (diff) pane.
@@ -96,12 +97,23 @@ export function buildReviewWindow({ worktreePath, name, setupCmd, claudeCmd, dif
   if (right.status !== 0) return { error: (right.stderr || "tmux split-window failed").trim(), window };
   const claudePane = right.stdout.trim();
 
+  // 4. Split the setup pane again, adding a narrow status pane to its LEFT
+  //    (-b): branch/PR/env info, fixed-width since it's a short label column.
+  const left = tmux([
+    "split-window", "-b", "-h", "-l", "32", "-t", setupPane, "-c", worktreePath,
+    "-P", "-F", "#{pane_id}",
+  ]);
+  if (left.status !== 0) return { error: (left.stderr || "tmux split-window failed").trim(), window };
+  const statusPane = left.stdout.trim();
+
   // Tag panes by role so the diff viewer can find the Claude pane later.
+  tmux(["set-option", "-p", "-t", statusPane, "@orbit_role", "status"]);
   tmux(["set-option", "-p", "-t", setupPane, "@orbit_role", "setup"]);
   tmux(["set-option", "-p", "-t", claudePane, "@orbit_role", "claude"]);
   tmux(["set-option", "-p", "-t", diffPane, "@orbit_role", "diff"]);
 
   // Seed each pane's command.
+  if (statusCmd) runInPane(statusPane, statusCmd);
   if (setupCmd) runInPane(setupPane, setupCmd);
   if (claudeCmd) runInPane(claudePane, claudeCmd);
   if (diffCmd) runInPane(diffPane, diffCmd);
@@ -110,5 +122,5 @@ export function buildReviewWindow({ worktreePath, name, setupCmd, claudeCmd, dif
   // review surface, and where annotations get sent to Claude from.
   tmux(["select-pane", "-t", diffPane]);
 
-  return { window, panes: { setup: setupPane, claude: claudePane, diff: diffPane } };
+  return { window, panes: { status: statusPane, setup: setupPane, claude: claudePane, diff: diffPane } };
 }

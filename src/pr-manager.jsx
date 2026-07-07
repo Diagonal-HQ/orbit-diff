@@ -15,6 +15,7 @@ import { listReviewPRs, renderCommand, renderPath, shq } from "./pr.mjs";
 import { listWorktrees, addWorktree, removeWorktree } from "./git.mjs";
 import { loadConfig, CONFIG_HINT } from "./ai/config.mjs";
 import { orbitDir, repoRoot } from "./paths.mjs";
+import { openUrl } from "./platform.mjs";
 import {
   inTmux,
   findWindowByWorktree,
@@ -60,25 +61,6 @@ export async function runPrManager() {
       child.unref();
       closeSync(fd); // the child holds its own dup of the fd
       return { ok: true, cmd, logPath, pid: child.pid };
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-  };
-
-  // Open a URL in the system's default browser, detached so it never touches the
-  // TUI's terminal. Returns { ok } / { ok:false, error }.
-  const openUrl = (url) => {
-    if (!url) return { ok: false, error: "no URL to open" };
-    const platform = process.platform;
-    const [cmd, args] =
-      platform === "darwin" ? ["open", [url]]
-      : platform === "win32" ? ["cmd", ["/c", "start", "", url]]
-      : ["xdg-open", [url]];
-    try {
-      const child = spawn(cmd, args, { stdio: "ignore", detached: true });
-      child.on("error", () => {}); // swallow ENOENT etc.; nothing to log onto the TUI
-      child.unref();
-      return { ok: true };
     } catch (err) {
       return { ok: false, error: err.message };
     }
@@ -178,6 +160,7 @@ export async function runPrManager() {
     const built = buildReviewWindow({
       worktreePath: wtPath,
       name: windowName({ path: wtPath, branch: pr.headRefName }),
+      statusCmd: "orbit-diff pr-status",
       setupCmd,
       claudeCmd,
       diffCmd: "orbit-diff",

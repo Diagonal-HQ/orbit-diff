@@ -24,10 +24,10 @@ export default {
   // non-draft PRs assigned to you or awaiting your review. Picking one (enter)
   // makes orbit-diff:
   //   1. create a git worktree for the PR branch,
-  //   2. open a detached tmux review window with three panes —
-  //        ┌─── setup ────┬─── claude ───┐
-  //        ├──────── orbit-diff ─────────┤   (bottom, full width)
-  //        └─────────────────────────────┘
+  //   2. open a detached tmux review window with four panes —
+  //        ┌ status ┬─── setup ────┬─── claude ───┐
+  //        ├──────────── orbit-diff ──────────────┤   (bottom, full width)
+  //        └───────────────────────────────────────┘
   //   3. track it all (PR ↔ worktree ↔ panes ↔ env instance) in a session
   //      registry under ~/.cache/orbit-diff/sessions/ — nothing touches the repo.
   //

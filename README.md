@@ -98,6 +98,7 @@ orbit-diff main..feature    # a branch range, PR-style
 | `c` | comment on the selection (or the cursor line); on an already-annotated line, edit it |
 | `x` | delete the annotation on the cursor line (or the highlighted one in the rail's annotations list) |
 | `a` | jump the rail cursor to the annotations list (then `↑↓`/`j` `k` navigate, `Enter` jumps to it in the diff) |
+| `o` | open this branch's GitHub PR in the browser (when one exists) |
 | `y` | copy all annotations to the clipboard as a change-request prompt for Claude Code |
 | `r` | open the **submit** picker: apply via Claude Code (or *send to the Claude pane* in a managed review window), post to the GitHub PR (when one exists), or copy |
 | `R` | reload the diff — pick up edits Claude made in its pane |
@@ -145,8 +146,8 @@ stream in when `gh` answers.
 | `↑↓` / `j` `k` | move · `g` / `G` jump to top / bottom |
 | `Enter` | **start** a review for this PR (or focus its window if already open) |
 | `o` | open the PR (or the worktree's PR) in the browser |
+| `d` | **finish** — tear the review down, if this PR has one (see below) |
 | `Tab` | switch focus between the PR list and the worktrees pane |
-| `d` (worktrees) | **finish** — tear the review down (see below) |
 | `Enter` (worktrees) | jump to that worktree's tmux window |
 | `/` | filter the list (fuzzy match on number / title / branch) |
 | `r` | refresh the list + worktrees |
@@ -159,17 +160,18 @@ you stay in the PR list (the new window opens in the background) and a spinner o
 the PR line tracks progress. Under the hood it:
 
 1. **creates a git worktree** for the PR branch (fetching it if it's remote-only),
-2. **opens a detached tmux window** split into three panes —
+2. **opens a detached tmux window** split into four panes —
 
    ```
-   ┌──────── setup ────────┬──────── claude ───────┐
-   ├───────────────── orbit-diff ──────────────────┤
-   └────────────────────────────────────────────────┘
+   ┌─ status ─┬──────── setup ────────┬──────── claude ───────┐
+   ├────────────────────── orbit-diff ──────────────────────┤
+   └───────────────────────────────────────────────────────┘
    ```
 
-   top-left runs your `setup` command inside the worktree, top-right runs
-   `claude` (a live session, ready to talk to), and the bottom, full-width pane
-   runs `orbit-diff` on the PR's diff;
+   top-left shows a live **status** panel (branch, PR state/assignee/
+   reviewers/checks, provisioned env), next to it `setup` runs inside the
+   worktree, top-right runs `claude` (a live session, ready to talk to), and
+   the bottom, full-width pane runs `orbit-diff` on the PR's diff;
 3. **tracks it all** — the PR ↔ worktree ↔ tmux panes ↔ env instance — in a
    session registry under `~/.cache/orbit-diff/sessions/` (nothing is written
    into the repo).
