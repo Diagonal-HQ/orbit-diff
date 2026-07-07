@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
 import { Box, Text, useApp, useInput } from "ink";
 import { changeRequestPath, tildeify } from "./paths.mjs";
 import { Sidebar } from "./Sidebar.jsx";
@@ -25,6 +26,8 @@ import {
   loadFindings,
   saveFindings,
   validAgainst,
+  loadConversations,
+  saveConversations,
 } from "./store.mjs";
 import { fileDigest } from "./ai/cache.mjs";
 
@@ -89,6 +92,10 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   const [askMessages, setAskMessages] = useState([]); // chat transcript: {role, text}
   const [asking, setAsking] = useState(false); // an answer is streaming
   const [askScroll, setAskScroll] = useState(0); // rows scrolled up from the newest text (0 = pinned to bottom)
+  const [askConvId, setAskConvId] = useState(null); // id of the conversation record being written to
+  const [conversations, setConversations] = useState(() => loadConversations()); // saved `?` chats, newest first
+  const [askShowHistory, setAskShowHistory] = useState(false); // Tab toggles the past-conversations list
+  const [askHistSel, setAskHistSel] = useState(0);
   const aiRef = useRef(null); // memoized { config, orchestrator, preflight } once loaded
   const reviewToken = useRef(0); // guards stale async review callbacks
   const askToken = useRef(0); // guards stale async ask callbacks
@@ -116,6 +123,28 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   useEffect(() => {
     saveFindings(findings);
   }, [findings]);
+
+  // Persist the active `?` conversation once a turn actually lands (guarded on
+  // `!asking` so mid-stream deltas don't churn disk writes). Upserts by
+  // askConvId and keeps the list newest-updated first.
+  useEffect(() => {
+    if (asking || askMessages.length === 0) return;
+    setConversations((all) => {
+      const idx = all.findIndex((c) => c.id === askConvId);
+      const record = {
+        id: askConvId,
+        title: conversationTitle(askMessages),
+        startedAt: idx >= 0 ? all[idx].startedAt : Date.now(),
+        updatedAt: Date.now(),
+        messages: askMessages,
+      };
+      const next = (idx >= 0 ? all.map((c, i) => (i === idx ? record : c)) : [record, ...all]).sort(
+        (a, b) => b.updatedAt - a.updatedAt,
+      );
+      saveConversations(next);
+      return next;
+    });
+  }, [asking, askMessages, askConvId]);
 
   const filtered = useMemo(() => filterFiles(files, fileQuery), [files, fileQuery]);
   const selectedFile = filtered[Math.min(selected, filtered.length - 1)];
@@ -602,7 +631,26 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
     setAskMessages([]);
     setAsking(false);
     setAskScroll(0);
+    setAskConvId(randomUUID());
+    setAskShowHistory(false);
     setMode("ask");
+  };
+
+  // Reopen a saved conversation for viewing/continuing: loads its transcript
+  // and adopts its id, so a follow-up upserts the same record instead of
+  // starting a new one. No live model session exists yet for it — sendAsk()
+  // lazily creates one on the next question and re-grounds it with these
+  // messages (see startConversation's priorMessages), since a fresh session
+  // has no memory of turns from a previous run.
+  const openConversation = (record) => {
+    if (!record) return;
+    closeAsk();
+    setAskMessages(record.messages);
+    setAskConvId(record.id);
+    setAskDraft("");
+    setAsking(false);
+    setAskScroll(0);
+    setAskShowHistory(false);
   };
 
   // Append `delta` to the last (assistant) message — the one currently streaming.
@@ -651,7 +699,10 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       return setToast(pf.message);
     }
     if (!askConvo.current) {
-      askConvo.current = ai.orchestrator.startConversation(files, selectedFile, ai.config);
+      // `askMessages` already holds a reopened conversation's prior turns (if
+      // any) — folded into this fresh session's grounding since it has no
+      // memory of a previous run.
+      askConvo.current = ai.orchestrator.startConversation(files, selectedFile, ai.config, askMessages);
     }
     const token = ++askToken.current;
     setAskDraft("");
@@ -698,8 +749,19 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
     // ---- Ask a question (multi-turn chat) ----
     if (mode === "ask") {
       if (key.escape) {
+        if (askShowHistory) return setAskShowHistory(false);
         closeAsk();
         return setMode("normal");
+      }
+      if (key.tab) {
+        setAskHistSel(0); // land on the most recent conversation each time it opens
+        return setAskShowHistory((s) => !s);
+      }
+      if (askShowHistory) {
+        if (key.upArrow || input === "k") return setAskHistSel((s) => clamp(s - 1, 0, Math.max(0, conversations.length - 1)));
+        if (key.downArrow || input === "j") return setAskHistSel((s) => clamp(s + 1, 0, Math.max(0, conversations.length - 1)));
+        if (key.return) return openConversation(conversations[clamp(askHistSel, 0, Math.max(0, conversations.length - 1))]);
+        return;
       }
       if (key.ctrl && (input === "d" || input === "u")) {
         const { bodyH: askBodyH, textW: askTextW } = askPanelMetrics(aiW, bodyH);
@@ -933,6 +995,9 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
             messages={askMessages}
             asking={asking}
             scroll={askScroll}
+            historyMode={askShowHistory}
+            history={conversations}
+            historySelected={askHistSel}
             width={leftW}
             height={bodyH}
           />
@@ -991,6 +1056,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
         fileCount={files.length}
         commentTarget={commentTarget}
         selectionRange={selectionRange}
+        askShowHistory={askShowHistory}
         toast={toast}
       />
     </Box>
@@ -999,7 +1065,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
 
 function StatusBar({
   mode, source, fileQuery, lineQuery, scope, matches, matchIdx, focus, section,
-  line, lineTotal, annCount, reviewCount, fileCount, commentTarget, selectionRange, toast,
+  line, lineTotal, annCount, reviewCount, fileCount, commentTarget, selectionRange, askShowHistory, toast,
 }) {
   if (mode === "files") {
     return <Bar><Text color="cyan">filter files</Text> <Text>{fileQuery}</Text><Text inverse> </Text><Dim> · enter to apply · esc to clear</Dim></Bar>;
@@ -1020,7 +1086,11 @@ function StatusBar({
     return <Bar><Text color="blueBright">AI review</Text><Dim> · confirm in the panel · </Dim><Text color="green">enter</Text><Dim> run · esc cancel</Dim></Bar>;
   }
   if (mode === "ask") {
-    return <Bar><Text color="blueBright">chat</Text><Dim> · ask or request changes · enter send · ^u/^d scroll · esc close</Dim></Bar>;
+    return askShowHistory ? (
+      <Bar><Text color="blueBright">history</Text><Dim> · ↑↓ move · enter open · tab back to chat · esc close</Dim></Bar>
+    ) : (
+      <Bar><Text color="blueBright">chat</Text><Dim> · ask or request changes · enter send · ^u/^d scroll · tab history · esc close</Dim></Bar>
+    );
   }
   if (toast) {
     return <Bar><Text color="green">✓ </Text><Text>{toast}</Text></Bar>;
@@ -1149,6 +1219,15 @@ const Dim = ({ children }) => <Text dimColor>{children}</Text>;
 
 function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(n, hi));
+}
+
+// A saved conversation's display title: its first question, collapsed to one
+// line and capped so it fits the history list.
+function conversationTitle(messages) {
+  const first = messages.find((m) => m.role === "user");
+  const text = (first?.text || "").replace(/\s+/g, " ").trim();
+  if (!text) return "(untitled)";
+  return text.length > 60 ? text.slice(0, 59) + "…" : text;
 }
 
 // Nudge the viewport so `cursor` stays visible with a small margin, moving as

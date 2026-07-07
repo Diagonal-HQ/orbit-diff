@@ -58,12 +58,15 @@ async function reviewOne(file, config) {
 // Start a multi-turn chat about the diff/codebase. The first question is grounded
 // with the diff context (changed-file list + focused file); follow-ups go straight
 // to the live session, which already remembers the context and prior turns. The
-// session can edit the working tree when asked. Returns a handle: `ask(question,
-// onDelta)` streams each answer and resolves to `{ text, changed }` (`changed` true
-// when the turn edited files, so the caller can reload); `dispose()` ends it.
-export function startConversation(files, focused, config) {
+// session can edit the working tree when asked. `priorMessages` (from a reopened,
+// previously-saved conversation) is folded into that same grounding, since this is
+// a fresh model session with no memory of those turns. Returns a handle:
+// `ask(question, onDelta)` streams each answer and resolves to `{ text, changed }`
+// (`changed` true when the turn edited files, so the caller can reload);
+// `dispose()` ends it.
+export function startConversation(files, focused, config, priorMessages = []) {
   const convo = startClientConversation(config);
-  const context = buildContext(files, focused);
+  const context = buildContext(files, focused, priorMessages);
   let first = true;
   return {
     ask(question, onDelta) {
@@ -75,9 +78,11 @@ export function startConversation(files, focused, config) {
   };
 }
 
-// Compact grounding context: the list of changed files, plus the focused file's
-// numbered diff (capped — the model can read more via its read-only tools).
-function buildContext(files, focused) {
+// Compact grounding context: the list of changed files, the focused file's
+// numbered diff (capped — the model can read more via its read-only tools), and
+// — when reopening a saved conversation — the prior turns, since this session
+// has never seen them.
+function buildContext(files, focused, priorMessages = []) {
   const list = files.map((f) => `- ${f.path} (${f.status}, +${f.additions}/-${f.deletions})`).join("\n");
   let focusBlock = "";
   if (focused) {
@@ -92,5 +97,10 @@ function buildContext(files, focused) {
       .slice(0, 8000);
     focusBlock = `\n\nCurrently viewing ${focused.path}:\n${body}`;
   }
-  return `Files changed in the diff under review:\n${list}${focusBlock}`;
+  let historyBlock = "";
+  if (priorMessages.length) {
+    const transcript = priorMessages.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text}`).join("\n\n");
+    historyBlock = `\n\nContinuing an earlier conversation:\n${transcript}`;
+  }
+  return `Files changed in the diff under review:\n${list}${focusBlock}${historyBlock}`;
 }

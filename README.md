@@ -103,7 +103,7 @@ orbit-diff main..feature    # a branch range, PR-style
 | `r` | open the **submit** picker: apply via Claude Code (or *send to the Claude pane* in a managed review window), post to the GitHub PR (when one exists), or copy |
 | `R` | reload the diff — pick up edits Claude made in its pane |
 | `A` | **AI review** of the diff — findings stream into a side panel (`↑↓`/`j` `k` move · `Enter` jump to it · `p` promote to an annotation · `Esc` close) |
-| `?` | **ask** the model a question about the diff / codebase — the answer streams into a panel (`Ctrl-u`/`Ctrl-d` scroll the transcript · `Esc` close) |
+| `?` | **ask** the model a question about the diff / codebase — the answer streams into a panel (`Ctrl-u`/`Ctrl-d` scroll the transcript · `Tab` past conversations · `Esc` close) |
 | `Enter` | rail → focus diff · find → jump to first match |
 | `Esc` | while typing: cancel · selecting: cancel the selection · normal: clear an applied filter/search |
 | `q` / `Ctrl-c` | quit |
@@ -233,6 +233,12 @@ copy. You decide which findings become change requests.
 Press `?` to **ask a question** about the diff or the surrounding codebase. The
 model has read-only tools (read/grep/find/ls) so it can explore the repo to answer;
 it can never edit files or run commands.
+
+Every conversation is saved automatically, so `Tab` inside the chat panel opens a
+list of past conversations for this branch — `↑↓` to pick one, `Enter` to reopen
+it, `Tab` again to go back to the live chat. Reopening one loads its transcript
+and, if you ask a follow-up, seeds a fresh model session with that history so it
+has the context of the earlier turns.
 
 Results are **cached** outside the repo, under
 `~/.cache/orbit-diff/<repo>/<branch>/ai-cache/` (honours `$XDG_CACHE_HOME`), so

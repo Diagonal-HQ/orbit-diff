@@ -36,8 +36,37 @@ export function flattenAskRows(messages, asking, textW) {
 // while `asking` is true. `draft` is the follow-up being typed. `scroll` is how
 // many rows up from the bottom the view sits (0 = pinned to the newest text,
 // so streaming tokens stay in view; Ctrl-u/Ctrl-d in App.jsx page it).
-export function AskPanel({ messages, draft, asking, scroll = 0, width, height }) {
+//
+// `historyMode` swaps the transcript for a list of past conversations (Tab
+// toggles it in App.jsx) — `history` is [{id, title, messages}], newest first.
+export function AskPanel({ messages, draft, asking, scroll = 0, width, height, historyMode = false, history = [], historySelected = 0 }) {
   const { bodyH, textW } = askPanelMetrics(width, height);
+
+  if (historyMode) {
+    return (
+      <Box flexDirection="column" width={width} height={height} borderStyle="round" borderColor="magenta" paddingX={1}>
+        <Text bold color="magenta" wrap="truncate">Past conversations ({history.length})</Text>
+        <Box marginTop={1} flexDirection="column" flexGrow={1}>
+          {history.length === 0 ? (
+            <Text dimColor>no saved conversations yet</Text>
+          ) : (
+            history.map((c, i) => {
+              const on = i === historySelected;
+              const turns = c.messages.filter((m) => m.role === "user").length;
+              return (
+                <Text key={c.id} inverse={on} wrap="truncate">
+                  {on ? "❯ " : "  "}
+                  {truncate(c.title || "(untitled)", Math.max(4, textW - 12))}
+                  <Text dimColor>{`  ${turns} turn${turns === 1 ? "" : "s"}`}</Text>
+                </Text>
+              );
+            })
+          )}
+        </Box>
+        <Text dimColor wrap="truncate">↑↓ move · enter open · tab back to chat · esc close</Text>
+      </Box>
+    );
+  }
   const rows = flattenAskRows(messages, asking, textW);
 
   // `end` is fixed by the scroll offset (rows hidden below); reserve a row for
@@ -89,6 +118,12 @@ export function AskPanel({ messages, draft, asking, scroll = 0, width, height })
       <Text dimColor wrap="truncate">{footer}</Text>
     </Box>
   );
+}
+
+function truncate(s, max) {
+  s = String(s ?? "");
+  if (s.length <= max) return s;
+  return s.slice(0, Math.max(1, max - 1)) + "…";
 }
 
 // Word-wrap one logical line to `width` columns, breaking at spaces where it can
