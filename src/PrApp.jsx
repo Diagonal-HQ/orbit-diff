@@ -95,15 +95,31 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
     return () => clearInterval(id);
   }, [refreshMin, loadWorktrees]);
 
-  // Poll the session registry so the "provisioning" spinner flips to the env
-  // instance as soon as the setup script's `orbit-diff env-report` lands. Tick
-  // fast while something is provisioning; idle back to a slow heartbeat.
+  // Poll the session registry so a review's spinner tracks its lifecycle: setup
+  // (`provisioning`) flips to the env instance when `orbit-diff env-report`
+  // lands, and teardown (`tearing-down`) clears when the detached finish job
+  // removes the session file. Tick fast while anything is in flight — and each
+  // time an in-flight review completes, refresh the PR + worktree lists too.
   const anyProvisioning = sessions.some((s) => s.status === "provisioning");
+  const anyTearingDown = sessions.some((s) => s.status === "tearing-down");
+  const inFlight = anyProvisioning || anyTearingDown;
   useEffect(() => {
-    const period = anyProvisioning ? 1500 : 20_000;
-    const id = setInterval(() => setSessions(safeCall(loadSessions)), period);
+    const period = inFlight ? 1500 : 20_000;
+    const id = setInterval(() => {
+      setSessions(safeCall(loadSessions));
+      if (inFlight) setWorktrees(safeCall(loadWorktrees)); // reflect the new/removed worktree promptly
+    }, period);
     return () => clearInterval(id);
-  }, [anyProvisioning, loadSessions]);
+  }, [inFlight, loadSessions, loadWorktrees]);
+
+  // When the last in-flight review finishes (setup reported ready, or teardown
+  // cleared its session), `inFlight` flips true→false — refetch the PR list +
+  // worktrees so both reflect the change.
+  const wasInFlight = useRef(false);
+  useEffect(() => {
+    if (wasInFlight.current && !inFlight) setReloadTick((t) => t + 1);
+    wasInFlight.current = inFlight;
+  }, [inFlight]);
 
   const loading = prs === null;
   const all = prs || [];
@@ -361,7 +377,8 @@ function PrList({ prs, loading, error, selected, focused, query, searching, wtBr
         const g = reviewGlyph(pr.reviewDecision);
         const hasWt = wtBranches.has(pr.headRefName);
         const sess = sessionByBranch.get(pr.headRefName);
-        const provisioning = sess && sess.status === "provisioning";
+        // Busy = provisioning the env or tearing it down; both show a spinner.
+        const busy = sess && (sess.status === "provisioning" || sess.status === "tearing-down");
         // When the env is provisioned, tag the row with its instance number.
         const envTag = sess && sess.status === "ready" && sess.envInstance != null ? ` EV${sess.envInstance}` : "";
         const num = `#${pr.number}`;
@@ -373,7 +390,7 @@ function PrList({ prs, loading, error, selected, focused, query, searching, wtBr
         return (
           <Text key={pr.number} inverse={active} wrap="truncate">
             <Text color={g.color}>{g.char} </Text>
-            {provisioning ? (
+            {busy ? (
               <Text color="yellow"><Spinner color="yellow" /> </Text>
             ) : (
               <Text color="blueBright">{hasWt || sess ? "⧉ " : "  "}</Text>
@@ -415,14 +432,14 @@ function WorktreePane({ worktrees, prByBranch, sessionByPath, selected, focused,
           : w.branch || (w.head ? `detached ${w.head.slice(0, 7)}` : "(detached)");
         const prNum = w.branch ? prByBranch.get(w.branch) : undefined;
         const sess = sessionByPath.get(w.path);
-        const provisioning = sess && sess.status === "provisioning";
+        const busy = sess && (sess.status === "provisioning" || sess.status === "tearing-down");
         // A short suffix: the PR number and, once known, the env instance.
         const env = sess && sess.status === "ready" && sess.envInstance != null ? ` EV${sess.envInstance}` : "";
         const failed = sess && sess.status === "failed";
         const tag = `${prNum ? ` #${prNum}` : ""}${env}`;
         return (
           <Text key={w.path + idx} inverse={active} wrap="truncate">
-            {provisioning ? (
+            {busy ? (
               <Text color="yellow"><Spinner color="yellow" />  </Text>
             ) : (
               <Text color={failed ? "red" : "blueBright"}>{failed ? "✗  " : "⧉  "}</Text>

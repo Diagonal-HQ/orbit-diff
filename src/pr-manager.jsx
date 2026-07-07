@@ -22,7 +22,7 @@ import {
   killWindow,
   buildReviewWindow,
 } from "./tmux.mjs";
-import { sessionKey, writeSession, updateSession, deleteSession, listSessions } from "./session.mjs";
+import { sessionKey, sessionPath, writeSession, updateSession, deleteSession, listSessions } from "./session.mjs";
 
 // Filesystem-safe slug for a branch name in a log filename.
 function slug(s) {
@@ -199,12 +199,14 @@ export async function runPrManager() {
   // Finish a review. orbit-diff ALWAYS owns worktree removal, so your `pr.done`
   // only has to do env teardown (destroy the instance, etc.). Steps:
   //   1. close the review window and drop the session (immediate, safe),
-  //   2. run `pr.done` — then remove the git worktree, as ONE detached job so
-  //      the removal happens *after* teardown (which typically runs `make`
-  //      inside the worktree and needs it present) and survives you leaving the
-  //      picker. `;` means the worktree is removed even if teardown errors.
-  // With no `pr.done`, the worktree is removed synchronously so errors surface.
-  // `target` carries at least { headRefName, path }. Returns { ok, ...outcome }.
+  //   2. run `pr.done` — then remove the git worktree, then delete the session
+  //      file, as ONE detached job so removal happens *after* teardown (which
+  //      typically runs `make` inside the worktree and needs it present) and it
+  //      survives you leaving the picker. `;` means each step runs regardless.
+  // While that job runs, the session is marked "tearing-down" so the picker can
+  // show a spinner; the job's final `rm` of the session file is how the picker
+  // learns it finished. With no `pr.done`, the worktree is removed synchronously
+  // (errors surface immediately). `target` carries at least { headRefName, path }.
   const finishReview = (target) => {
     const path = target && target.path;
 
@@ -220,17 +222,22 @@ export async function runPrManager() {
     let error = null;
 
     if (path && doneCmd) {
+      const key = sessionKey(path);
       const removeCmd = `git -C ${shq(repoRoot())} worktree remove --force ${shq(path)}`;
-      const res = runDetached(`${doneCmd} ; ${removeCmd}`, `finish-${slug(target.headRefName || "worktree")}`);
+      const cleanupCmd = `rm -f ${shq(sessionPath(key))}`;
+      const res = runDetached(`${doneCmd} ; ${removeCmd} ; ${cleanupCmd}`, `finish-${slug(target.headRefName || "worktree")}`);
       logPath = res.logPath || null;
       error = res.ok ? null : res.error;
+      // Keep the record as a spinner marker until the job's final `rm` clears it.
+      if (res.ok) updateSession(key, { status: "tearing-down", logPath });
+      else deleteSession(key); // never launched — nothing to track
     } else if (path) {
       const rm = removeWorktree(path);
       removed = rm.ok;
       error = rm.ok ? null : rm.error;
+      deleteSession(sessionKey(path));
     }
 
-    if (path) deleteSession(sessionKey(path));
     return { ok: !error, error, killed, removed, ranDone: !!doneCmd, logPath };
   };
 

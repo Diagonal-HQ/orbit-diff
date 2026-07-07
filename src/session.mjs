@@ -35,9 +35,12 @@ export function sessionKey(worktreePath) {
   return createHash("sha256").update(worktreePath).digest("hex").slice(0, 16);
 }
 
-function sessionFile(key) {
+// Absolute path of a session's JSON file. Exported so the teardown job can `rm`
+// it as its final step, which is how the picker learns the teardown finished.
+export function sessionPath(key) {
   return `${sessionsDir()}/${key}.json`;
 }
+const sessionFile = sessionPath;
 
 // Write a full record (stamping key + updatedAt). Creates the dir as needed.
 export function writeSession(record) {
