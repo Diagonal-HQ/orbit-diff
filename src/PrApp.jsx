@@ -406,7 +406,24 @@ function OverviewPane({ pr, overview, width, height }) {
   const summaryRows = loaded ? 1 + 2 + (labels.length > 0 ? 1 : 0) : 1 + 1;
   const bodyRoom = Math.max(0, height - 2 - 2 - summaryRows - 2);
   const showBody = bodyLines.length > 0 && bodyRoom >= 1;
-  const bodyShown = bodyLines.length > bodyRoom ? bodyLines.slice(0, Math.max(0, bodyRoom - 1)) : bodyLines;
+
+  // Lines wrap, so a single source line can take several terminal rows. Budget
+  // by *wrapped* rows (text length / inner width) and keep whole lines until the
+  // budget runs out, reserving one row for the "… more" note when we truncate.
+  const contentW = Math.max(1, width - 4); // border (2) + paddingX 1 each side (2)
+  const rowsFor = (segs) =>
+    Math.max(1, Math.ceil(segs.reduce((n, s) => n + (s.text ? s.text.length : 0), 0) / contentW));
+  const totalRows = bodyLines.reduce((n, segs) => n + rowsFor(segs), 0);
+  const budget = totalRows > bodyRoom ? Math.max(0, bodyRoom - 1) : bodyRoom;
+  const bodyShown = [];
+  let usedRows = 0;
+  for (const segs of bodyLines) {
+    const r = rowsFor(segs);
+    if (usedRows + r > budget) break;
+    usedRows += r;
+    bodyShown.push(segs);
+  }
+  const hiddenLines = bodyLines.length - bodyShown.length;
 
   return (
     <Box flexDirection="column" width={width} height={height} borderStyle="round" borderColor="gray" paddingX={1}>
@@ -446,7 +463,7 @@ function OverviewPane({ pr, overview, width, height }) {
         <Box marginTop={1} flexDirection="column">
           <Text dimColor>— description —</Text>
           {bodyShown.map((segs, i) => (
-            <Text key={i} wrap="truncate">
+            <Text key={i} wrap="wrap">
               {segs.map((s, j) => (
                 <Text
                   key={j}
@@ -462,7 +479,7 @@ function OverviewPane({ pr, overview, width, height }) {
               ))}
             </Text>
           ))}
-          {bodyLines.length > bodyRoom && <Text dimColor>… {bodyLines.length - bodyShown.length} more lines</Text>}
+          {hiddenLines > 0 && <Text dimColor>… {hiddenLines} more line{hiddenLines === 1 ? "" : "s"}</Text>}
         </Box>
       )}
     </Box>
