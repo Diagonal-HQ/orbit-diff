@@ -147,11 +147,19 @@ stream in when `gh` answers.
 | `Enter` | **start** a review for this PR (or focus its window if already open) |
 | `o` | open the PR (or the worktree's PR) in the browser |
 | `d` | **finish** — tear the review down, if this PR has one (see below) |
+| `n` | **new local worktree** — prompt for a branch name and open it the same way as a PR, with no PR behind it |
 | `Tab` | switch focus between the PR list and the worktrees pane |
 | `Enter` (worktrees) | jump to that worktree's tmux window |
 | `/` | filter the list (fuzzy match on number / title / branch) |
 | `r` | refresh the list + worktrees |
 | `q` / `Esc` / `Ctrl-c` | quit (`Esc` clears an active filter first) |
+
+Press `n` to work on something that isn't (yet) a PR — type a branch name and
+`Enter` creates a new branch off wherever the repo is currently checked out, in
+its own worktree, and opens the exact same four-pane review window a PR gets
+(status · setup · claude · orbit-diff). It shows up in the worktrees pane like
+any other, so `Enter` refocuses it and `d` tears it down when you're done —
+it's just not tagged with a PR number since there isn't one.
 
 ### The review flow
 

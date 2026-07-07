@@ -53,6 +53,19 @@ export function addWorktree(path, branch) {
   return { ok: true, path };
 }
 
+// Create a worktree on a brand-new local branch — unlike addWorktree (which
+// checks out a branch that already exists, local or on origin), this is for
+// starting something from scratch that isn't tied to any PR. `base` is the ref
+// the new branch starts from (defaults to HEAD, i.e. wherever this repo is
+// currently checked out). Returns { ok, path } or { ok:false, error }.
+export function createWorktree(path, branch, base = "HEAD") {
+  const res = git(["worktree", "add", "-b", branch, path, base]);
+  if (res.status !== 0) {
+    return { ok: false, error: (res.stderr || "git worktree add failed").trim() };
+  }
+  return { ok: true, path };
+}
+
 // Remove a worktree (force, so a dirty tree still goes). Returns { ok } /
 // { ok:false, error }.
 export function removeWorktree(path) {

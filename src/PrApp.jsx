@@ -32,8 +32,10 @@ const safeCall = (fn) => {
 // instance. `o` opens the PR in the browser, `d` tears its workspace down (when
 // one exists) via `finishReview`, `tab` moves focus to the worktrees pane (where
 // `enter` jumps to a worktree's tmux window, `o` opens its PR, and `d` also
-// tears it down), and `/` filters the list.
-export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finishReview, openUrl, openWorktree, config }) {
+// tears it down), `n` opens a prompt for a branch name and hands it to
+// `startLocal` — the same worktree + review window as a PR, but on a brand-new
+// local branch with no PR behind it — and `/` filters the list.
+export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, startLocal, finishReview, openUrl, openWorktree, config }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
@@ -50,8 +52,9 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
   const [descScroll, setDescScroll] = useState(0); // scroll offset into the description pane
   const [focus, setFocus] = useState("prs"); // "prs" | "worktrees"
   const [toast, setToast] = useState(null);
-  const [mode, setMode] = useState("normal"); // "normal" | "search"
+  const [mode, setMode] = useState("normal"); // "normal" | "search" | "newWorktree"
   const [query, setQuery] = useState("");
+  const [newWtName, setNewWtName] = useState(""); // branch name being typed for `n`
   // Overview cache: number -> overview object (or { error }); undefined = unfetched.
   const [details, setDetails] = useState({});
   // Numbers we've already kicked off a fetch for. A ref (not `details`) so it
@@ -193,6 +196,20 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
     );
   };
 
+  // `n`'s prompt: a brand-new branch + worktree with no PR behind it, opened
+  // the same way as a PR review.
+  const startLocalWt = (name) => {
+    const res = startLocal(name);
+    if (!res.ok) return setToast(res.error);
+    refreshLocal();
+    if (res.focused) return setToast(`⧉ focused review window for ${name}`);
+    setToast(
+      res.provisioning
+        ? `▶ ${name}: worktree + review window opened · provisioning…`
+        : `▶ ${name}: review window opened in background`,
+    );
+  };
+
   // `o` on a PR opens it in the system's default browser.
   const openInBrowser = (pr) => {
     if (!pr) return;
@@ -273,6 +290,24 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
       return;
     }
 
+    // ---- New local worktree: capture the branch name to hand to startLocal ----
+    if (mode === "newWorktree") {
+      if (key.escape) {
+        setNewWtName("");
+        return setMode("normal");
+      }
+      if (key.return) {
+        const name = newWtName.trim();
+        setMode("normal");
+        setNewWtName("");
+        if (name) startLocalWt(name);
+        return;
+      }
+      if (key.backspace || key.delete) return setNewWtName((s) => s.slice(0, -1));
+      if (input && !key.ctrl && !key.meta) return setNewWtName((s) => s + input);
+      return;
+    }
+
     // ---- Normal mode ----
     if (input === "q") return exit();
     if (key.escape) {
@@ -282,6 +317,11 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
     if (input === "/") {
       setToast(null);
       return setMode("search");
+    }
+    if (input === "n") {
+      setToast(null);
+      setNewWtName("");
+      return setMode("newWorktree");
     }
     if (input === "r") {
       setToast(null);
@@ -382,6 +422,8 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
 
       {mode === "search" ? (
         <SearchBar query={query} count={list.length} />
+      ) : mode === "newWorktree" ? (
+        <NewWorktreeBar name={newWtName} />
       ) : (
         <StatusBar focus={paneFocus} setupCmd={setupCmd} inTmux={!!process.env.TMUX} />
       )}
@@ -731,6 +773,21 @@ function SearchBar({ query, count }) {
   );
 }
 
+function NewWorktreeBar({ name }) {
+  return (
+    <Box height={1}>
+      <Text wrap="truncate">
+        {" "}
+        <Text color="green">new worktree</Text>
+        <Text dimColor>  branch </Text>
+        {name}
+        <Text inverse> </Text>
+        <Text dimColor>  enter create · esc cancel</Text>
+      </Text>
+    </Box>
+  );
+}
+
 function StatusBar({ focus, setupCmd, inTmux }) {
   // Action hints depend on which pane is focused: start/open on the PR list,
   // focus/finish on the worktrees pane. (Transient status shows in the header's
@@ -749,7 +806,7 @@ function StatusBar({ focus, setupCmd, inTmux }) {
     <Box height={1}>
       <Text wrap="truncate">
         {" "}
-        <Text dimColor>↑↓/jk</Text> move  <Text bold>tab</Text> pane  {actions}  <Text bold>/</Text> search  <Text bold>r</Text> refresh  <Text bold>q</Text> quit
+        <Text dimColor>↑↓/jk</Text> move  <Text bold>tab</Text> pane  {actions}  <Text bold>n</Text> new  <Text bold>/</Text> search  <Text bold>r</Text> refresh  <Text bold>q</Text> quit
         {focus !== "worktrees" && setupCmd ? <Text dimColor>   ⚙ {setupCmd}</Text> : null}
       </Text>
     </Box>

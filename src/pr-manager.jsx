@@ -12,7 +12,7 @@ import { render } from "ink";
 import { PrApp } from "./PrApp.jsx";
 import { inPlaceStdout } from "./inplace-stdout.mjs";
 import { listReviewPRs, renderCommand, renderPath, shq } from "./pr.mjs";
-import { listWorktrees, addWorktree, removeWorktree } from "./git.mjs";
+import { listWorktrees, addWorktree, createWorktree, removeWorktree } from "./git.mjs";
 import { loadConfig, CONFIG_HINT } from "./ai/config.mjs";
 import { orbitDir, repoRoot } from "./paths.mjs";
 import { openUrl } from "./platform.mjs";
@@ -152,14 +152,59 @@ export async function runPrManager() {
       createdAt: new Date().toISOString(),
     });
 
-    // `setup` (falling back to the legacy `start`) runs in the top-left pane; it
+    return openReviewWindow(key, wtPath, pr);
+  };
+
+  // Start a local, ad-hoc worktree: create a brand-new branch (off the current
+  // HEAD, wherever this repo happens to be checked out) and open the same
+  // four-pane review window as a PR review, but with no PR behind it — for
+  // poking at something locally without a GitHub PR driving it. Shares the
+  // worktree-dedup + window-build logic with startReview above.
+  const startLocal = (name) => {
+    const branch = name.trim();
+    if (!branch) return { ok: false, error: "no name given" };
+    if (!inTmux()) return { ok: false, error: "not inside tmux — start tmux to open a review window" };
+
+    const root = repoRoot();
+    const wtPath = `${dirname(root)}/${basename(root)}-worktrees/${slug(branch)}`;
+
+    const existing = findWindowByWorktree(wtPath);
+    if (existing) {
+      focusWindow(existing);
+      return { ok: true, focused: true, path: wtPath };
+    }
+    if (existsSync(wtPath)) return { ok: false, error: `${wtPath} already exists` };
+
+    const add = createWorktree(wtPath, branch);
+    if (!add.ok) return { ok: false, error: add.error };
+
+    const key = sessionKey(wtPath);
+    writeSession({
+      key,
+      pr: null,
+      branch,
+      title: branch,
+      worktreePath: wtPath,
+      status: "provisioning",
+      createdAt: new Date().toISOString(),
+    });
+
+    return openReviewWindow(key, wtPath, { headRefName: branch, title: branch });
+  };
+
+  // Shared tail for startReview/startLocal: render the setup/claude commands,
+  // build the four-pane window, and record it on the session. `target` is a
+  // pr-like object (headRefName/baseRefName/number/repo/title/url) — startLocal
+  // only has headRefName/title, and renderCommand leaves the rest blank.
+  function openReviewWindow(key, wtPath, target) {
+    // `setup` (falling back to the legacy `start`) runs in the setup pane; it
     // should call `orbit-diff env-report` when the environment is ready.
-    const setupCmd = renderCommand(config.pr.setup || config.pr.start, { ...pr, path: wtPath }) || "";
-    const claudeCmd = renderCommand(config.pr.claude, { ...pr, path: wtPath }) || "claude";
+    const setupCmd = renderCommand(config.pr.setup || config.pr.start, { ...target, path: wtPath }) || "";
+    const claudeCmd = renderCommand(config.pr.claude, { ...target, path: wtPath }) || "claude";
 
     const built = buildReviewWindow({
       worktreePath: wtPath,
-      name: windowName({ path: wtPath, branch: pr.headRefName }),
+      name: windowName({ path: wtPath, branch: target.headRefName }),
       statusCmd: "orbit-diff pr-status",
       setupCmd,
       claudeCmd,
@@ -177,7 +222,7 @@ export async function runPrManager() {
       status: setupCmd ? "provisioning" : "ready",
     });
     return { ok: true, path: wtPath, provisioning: !!setupCmd };
-  };
+  }
 
   // Finish a review. orbit-diff ALWAYS owns worktree removal, so your `pr.done`
   // only has to do env teardown (destroy the instance, etc.). Steps:
@@ -230,6 +275,7 @@ export async function runPrManager() {
       loadWorktrees={listWorktrees}
       loadSessions={listSessions}
       startReview={startReview}
+      startLocal={startLocal}
       finishReview={finishReview}
       openUrl={openUrl}
       openWorktree={openWorktree}
