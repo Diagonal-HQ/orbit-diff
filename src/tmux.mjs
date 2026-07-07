@@ -60,9 +60,11 @@ export function paneAlive(pane) {
 
 // Build the detached four-pane review window for a worktree:
 //
-//   ┌─ status ─┬──────── setup ────────┬──────── claude ───────┐
-//   ├───────────────────────── orbit-diff ──────────────────────┤
-//   └──────────────────────────────────────────────────────────┘
+//   ┌─ status ─┬──────── claude ───────┐
+//   ├──────────┤                       │
+//   │  setup   │                       │
+//   ├────────────── orbit-diff ────────┤
+//   └───────────────────────────────────┘
 //
 // Created with `new-window -d`, so it never steals the current view. Returns
 // { window, panes: { status, setup, claude, diff } } or { error } (with
@@ -97,14 +99,14 @@ export function buildReviewWindow({ worktreePath, name, statusCmd, setupCmd, cla
   if (right.status !== 0) return { error: (right.stderr || "tmux split-window failed").trim(), window };
   const claudePane = right.stdout.trim();
 
-  // 4. Split the setup pane again, adding a narrow status pane to its LEFT
-  //    (-b): branch/PR/env info, fixed-width since it's a short label column.
-  const left = tmux([
-    "split-window", "-b", "-h", "-l", "32", "-t", setupPane, "-c", worktreePath,
+  // 4. Split the setup pane again, stacking a short status pane ABOVE it (-b,
+  //    -v): branch/PR/env info, fixed-height since it's a short summary block.
+  const above = tmux([
+    "split-window", "-b", "-v", "-l", "9", "-t", setupPane, "-c", worktreePath,
     "-P", "-F", "#{pane_id}",
   ]);
-  if (left.status !== 0) return { error: (left.stderr || "tmux split-window failed").trim(), window };
-  const statusPane = left.stdout.trim();
+  if (above.status !== 0) return { error: (above.stderr || "tmux split-window failed").trim(), window };
+  const statusPane = above.stdout.trim();
 
   // Tag panes by role so the diff viewer can find the Claude pane later.
   tmux(["set-option", "-p", "-t", statusPane, "@orbit_role", "status"]);

@@ -163,15 +163,17 @@ the PR line tracks progress. Under the hood it:
 2. **opens a detached tmux window** split into four panes —
 
    ```
-   ┌─ status ─┬──────── setup ────────┬──────── claude ───────┐
-   ├────────────────────── orbit-diff ──────────────────────┤
-   └───────────────────────────────────────────────────────┘
+   ┌─ status ─┬──────── claude ───────┐
+   ├──────────┤                       │
+   │  setup   │                       │
+   ├───────────────── orbit-diff ─────┤
+   └───────────────────────────────────┘
    ```
 
    top-left shows a live **status** panel (branch, PR state/assignee/
-   reviewers/checks, provisioned env), next to it `setup` runs inside the
-   worktree, top-right runs `claude` (a live session, ready to talk to), and
-   the bottom, full-width pane runs `orbit-diff` on the PR's diff;
+   reviewers/checks, provisioned env), stacked above `setup` (which runs
+   inside the worktree), top-right runs `claude` (a live session, ready to
+   talk to), and the bottom, full-width pane runs `orbit-diff` on the PR's diff;
 3. **tracks it all** — the PR ↔ worktree ↔ tmux panes ↔ env instance — in a
    session registry under `~/.cache/orbit-diff/sessions/` (nothing is written
    into the repo).

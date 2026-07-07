@@ -25,9 +25,11 @@ export default {
   // makes orbit-diff:
   //   1. create a git worktree for the PR branch,
   //   2. open a detached tmux review window with four panes —
-  //        ┌ status ┬─── setup ────┬─── claude ───┐
-  //        ├──────────── orbit-diff ──────────────┤   (bottom, full width)
-  //        └───────────────────────────────────────┘
+  //        ┌ status ┬─── claude ───┐
+  //        ├────────┤              │
+  //        │ setup  │              │
+  //        ├──────────── orbit-diff ┤   (bottom, full width)
+  //        └───────────────────────┘
   //   3. track it all (PR ↔ worktree ↔ panes ↔ env instance) in a session
   //      registry under ~/.cache/orbit-diff/sessions/ — nothing touches the repo.
   //
