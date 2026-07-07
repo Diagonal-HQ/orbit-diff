@@ -192,10 +192,11 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
     refreshLocal();
     if (!res.ok) return setToast(res.error || `couldn't finish ${label}`);
     const bits = [];
-    if (res.ranDone) bits.push("teardown running");
     if (res.killed) bits.push("window closed");
-    if (res.removed) bits.push("worktree removed");
-    setToast(`✓ finished ${label}${bits.length ? " · " + bits.join(" · ") : ""}`);
+    if (res.ranDone) bits.push("teardown + worktree removal running in background");
+    else if (res.removed) bits.push("worktree removed");
+    const where = res.logPath ? ` · log ${tildeify(res.logPath)}` : "";
+    setToast(`✓ finishing ${label}${bits.length ? " · " + bits.join(" · ") : ""}${where}`);
   };
 
   // `enter` on a worktree opens it in a tmux window (or focuses the existing

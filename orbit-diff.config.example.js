@@ -40,8 +40,8 @@ export default {
     //   orbit-diff env-report <instance> [--url <url>]
     setup: "", // e.g. "make dev-env {branch} && orbit-diff env-report $EV_INSTANCE"
     claude: "claude", // command run in the top-right pane
-    done: "", // e.g. "tear-down {branch}" — run when finished; if unset, orbit-diff
-    //            removes the worktree itself
+    done: "", // e.g. "tear-down {branch}" — YOUR env teardown (destroy the instance,
+    //            etc.); orbit-diff always removes the git worktree itself afterwards
     worktreeDir: "", // where worktrees go; tokens {repo}{branch}{base}{number}, `~`
     //                  expands. Empty = sibling "<repo>-worktrees/<branch>".
     worktreeRefreshMinutes: 2, // auto-refresh the worktrees pane (0 disables)

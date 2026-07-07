@@ -11,7 +11,7 @@ import { dirname, basename } from "node:path";
 import { render } from "ink";
 import { PrApp } from "./PrApp.jsx";
 import { inPlaceStdout } from "./inplace-stdout.mjs";
-import { listReviewPRs, renderCommand, renderPath } from "./pr.mjs";
+import { listReviewPRs, renderCommand, renderPath, shq } from "./pr.mjs";
 import { listWorktrees, addWorktree, removeWorktree } from "./git.mjs";
 import { loadConfig, CONFIG_HINT } from "./ai/config.mjs";
 import { orbitDir, repoRoot } from "./paths.mjs";
@@ -43,18 +43,15 @@ export async function runPrManager() {
   const config = await loadConfig();
   if (config.warning) console.error(`\x1b[2morbit-diff: ${config.warning}\x1b[0m`);
 
-  // Launch a configured PR command in the background. Returns { ok, cmd,
-  // logPath, pid } or { ok:false, error }. Output is redirected to a per-action,
-  // per-branch log under the orbit cache dir; the child is detached + unref'd so
-  // it outlives the picker and never writes onto the TUI's terminal.
-  const runPr = (action, pr) => {
-    const template = action === "start" ? config.pr.start : config.pr.done;
-    const cmd = renderCommand(template, pr);
-    if (!cmd) return { ok: false, error: `pr.${action} isn't configured — set pr.${action} in ${CONFIG_HINT}` };
+  // Run a raw shell command in the background, both streams redirected to a log
+  // under the orbit cache dir. Detached + unref'd so it outlives the picker and
+  // never writes onto the TUI's terminal. Returns { ok, cmd, logPath, pid } or
+  // { ok:false, error }.
+  const runDetached = (cmd, logSlug) => {
     try {
       const dir = orbitDir();
       mkdirSync(dir, { recursive: true });
-      const logPath = `${dir}/pr-${action}-${slug(pr.headRefName)}.log`;
+      const logPath = `${dir}/pr-${logSlug}.log`;
       const fd = openSync(logPath, "a");
       const shell = process.env.SHELL || "/bin/sh";
       // `-i` sources the interactive rc so shell aliases/functions resolve; the
@@ -199,28 +196,42 @@ export async function runPrManager() {
     return { ok: true, path: wtPath, provisioning: !!setupCmd };
   };
 
-  // Finish a review: run the configured teardown (`pr.done`) in the background,
-  // kill the tmux window, drop the session record, and — only when `pr.done` is
-  // unset (so nothing else will) — remove the git worktree. `target` carries at
-  // least { headRefName, path }. Returns { ok, ...outcome } or { ok:false, error }.
+  // Finish a review. orbit-diff ALWAYS owns worktree removal, so your `pr.done`
+  // only has to do env teardown (destroy the instance, etc.). Steps:
+  //   1. close the review window and drop the session (immediate, safe),
+  //   2. run `pr.done` — then remove the git worktree, as ONE detached job so
+  //      the removal happens *after* teardown (which typically runs `make`
+  //      inside the worktree and needs it present) and survives you leaving the
+  //      picker. `;` means the worktree is removed even if teardown errors.
+  // With no `pr.done`, the worktree is removed synchronously so errors surface.
+  // `target` carries at least { headRefName, path }. Returns { ok, ...outcome }.
   const finishReview = (target) => {
     const path = target && target.path;
-    const doneSet = !!config.pr.done.trim();
-    const done = doneSet ? runPr("done", target) : { ok: true };
+
     let killed = false;
-    let removed = false;
-    let removeError = null;
     if (path) {
       const win = findWindowByWorktree(path);
       if (win) killed = killWindow(win);
-      if (!doneSet) {
-        const rm = removeWorktree(path);
-        removed = rm.ok;
-        removeError = rm.ok ? null : rm.error;
-      }
-      deleteSession(sessionKey(path));
     }
-    return { ok: done.ok, error: done.ok ? removeError : done.error, ranDone: doneSet, killed, removed };
+
+    const doneCmd = config.pr.done.trim() ? renderCommand(config.pr.done, target) : null;
+    let removed = false;
+    let logPath = null;
+    let error = null;
+
+    if (path && doneCmd) {
+      const removeCmd = `git -C ${shq(repoRoot())} worktree remove --force ${shq(path)}`;
+      const res = runDetached(`${doneCmd} ; ${removeCmd}`, `finish-${slug(target.headRefName || "worktree")}`);
+      logPath = res.logPath || null;
+      error = res.ok ? null : res.error;
+    } else if (path) {
+      const rm = removeWorktree(path);
+      removed = rm.ok;
+      error = rm.ok ? null : rm.error;
+    }
+
+    if (path) deleteSession(sessionKey(path));
+    return { ok: !error, error, killed, removed, ranDone: !!doneCmd, logPath };
   };
 
   const app = render(

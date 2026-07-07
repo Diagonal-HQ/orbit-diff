@@ -36,8 +36,10 @@ export const DEFAULTS = {
   //             deps, etc). Report the provisioned instance back to orbit-diff
   //             with `orbit-diff env-report <instance>` as its last step.
   //   claude  — runs in the top-right pane (default `claude`).
-  //   done    — teardown when you finish; if unset, orbit-diff removes the
-  //             worktree itself.
+  //   done    — YOUR env teardown when you finish (destroy the instance, etc.).
+  //             orbit-diff always removes the git worktree itself, after `done`
+  //             runs — so `done` only needs your custom teardown, not worktree
+  //             bookkeeping. Leave empty if there's nothing to tear down.
   //   worktreeDir — where to create worktrees. Tokens {repo} {branch} {base}
   //             {number}; `~` expands. Empty = sibling `<repo>-worktrees/<branch>`.
   //   start   — legacy alias for `setup` (still honoured when `setup` is empty).
@@ -81,8 +83,8 @@ export default {
     //             the new worktree. End it with \`orbit-diff env-report <instance>\`
     //             so orbit-diff can track the provisioned environment.
     claude: "claude", // command run in the top-right pane
-    done: "", //   e.g. "tear-down {branch}" — run when finished; if unset,
-    //             orbit-diff removes the worktree itself
+    done: "", //   e.g. "tear-down {branch}" — YOUR env teardown; orbit-diff always
+    //             removes the git worktree itself afterwards
     worktreeDir: "", // where worktrees go; tokens {repo} {branch} {base} {number},
     //             \`~\` expands. Empty = sibling "<repo>-worktrees/<branch>"
     worktreeRefreshMinutes: 2, // auto-refresh the worktrees pane (0 disables)

@@ -190,9 +190,12 @@ orbit-diff env-report <instance> [--url <url>] [--status ready|failed]
 
 Run from inside the worktree, it's matched to that worktree's session by path.
 
-**Finishing** (`d` on a worktree) runs your `done` command, closes the tmux
-window, and drops the session. If `done` is unset, orbit-diff removes the git
-worktree itself.
+**Finishing** (`d` on a worktree) closes the tmux window, runs your `done`
+command, then removes the git worktree and drops the session. orbit-diff
+**always** owns worktree removal — `done` only needs to do *your* teardown
+(destroy the provisioned instance, etc.), and it runs first (in the background,
+logged) so anything it does inside the worktree still sees it. Leave `done`
+empty if there's nothing external to tear down.
 
 Configure it in `~/.config/orbit-diff/config.js`. The tokens `{branch}` `{base}`
 `{number}` `{repo}` `{title}` `{url}` are substituted (shell-quoted), and
@@ -204,7 +207,7 @@ export default {
   pr: {
     setup: "make dev-env {branch} && orbit-diff env-report $EV_INSTANCE",
     claude: "claude",           // command run in the top-right pane
-    done: "tear-down {branch}", // unset ⇒ orbit-diff removes the worktree itself
+    done: "tear-down {branch}", // your env teardown; the worktree is removed for you
     worktreeDir: "",            // "" ⇒ sibling "<repo>-worktrees/<branch>"
     worktreeRefreshMinutes: 2,  // auto-refresh the worktrees pane (0 disables)
   },
