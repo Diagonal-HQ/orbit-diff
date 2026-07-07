@@ -1,19 +1,19 @@
 import React from "react";
 import { Box, Text } from "ink";
 
-// Left-column panel (mode === "ask"): a back-and-forth chat about the diff /
-// codebase. The transcript of prior turns scrolls above a persistent input line;
-// each answer streams into the last turn. `messages` is [{role, text}] with role
-// "user" | "assistant"; the final assistant turn is the one currently streaming
-// while `asking` is true. `draft` is the follow-up being typed.
-export function AskPanel({ messages, draft, asking, width, height }) {
+// The panel's inner geometry, shared with the key handler so it can compute
+// the same row layout `AskPanel` renders (for clamping the scroll offset).
+export function askPanelMetrics(width, height) {
   const inner = Math.max(1, height - 2); // borders
   const bodyH = Math.max(1, inner - 3); // title + input + footer
   const textW = Math.max(1, width - 4); // borders + paddingX
+  return { bodyH, textW };
+}
 
-  // Flatten the transcript into role-tagged visual lines (wrapped to the panel
-  // width) so we can show exactly the last `bodyH` of them — the newest text,
-  // including the streaming answer, always stays in view without overflowing.
+// Flatten the transcript into role-tagged visual lines (wrapped to `textW`),
+// one row per rendered terminal line, so the panel and the key handler agree
+// on where a given scroll offset lands.
+export function flattenAskRows(messages, asking, textW) {
   const rows = [];
   messages.forEach((m, i) => {
     if (i > 0) rows.push({ role: "gap", text: "" });
@@ -26,9 +26,37 @@ export function AskPanel({ messages, draft, asking, width, height }) {
       for (const ln of wrapLines(body, textW)) rows.push({ role, text: ln });
     }
   });
-  const shown = rows.slice(Math.max(0, rows.length - bodyH));
+  return rows;
+}
 
-  const footer = asking ? "asking… · esc close" : "enter send · esc close";
+// Left-column panel (mode === "ask"): a back-and-forth chat about the diff /
+// codebase. The transcript of prior turns scrolls above a persistent input line;
+// each answer streams into the last turn. `messages` is [{role, text}] with role
+// "user" | "assistant"; the final assistant turn is the one currently streaming
+// while `asking` is true. `draft` is the follow-up being typed. `scroll` is how
+// many rows up from the bottom the view sits (0 = pinned to the newest text,
+// so streaming tokens stay in view; Ctrl-u/Ctrl-d in App.jsx page it).
+export function AskPanel({ messages, draft, asking, scroll = 0, width, height }) {
+  const { bodyH, textW } = askPanelMetrics(width, height);
+  const rows = flattenAskRows(messages, asking, textW);
+
+  // `end` is fixed by the scroll offset (rows hidden below); reserve a row for
+  // each hint that ends up showing, mirroring the PR overview's description
+  // scroll so the count of visible rows never overflows `bodyH`.
+  const maxScroll = Math.max(0, rows.length - bodyH);
+  const clampedScroll = Math.max(0, Math.min(scroll, maxScroll));
+  const end = rows.length - clampedScroll;
+  const below = rows.length - end;
+  let budget = bodyH - (below > 0 ? 1 : 0);
+  let start = Math.max(0, end - budget);
+  const above = start;
+  if (above > 0) {
+    budget -= 1;
+    start = Math.max(0, end - budget);
+  }
+  const shown = rows.slice(start, end);
+
+  const footer = asking ? "asking… · esc close" : "enter send · esc close · ^u/^d scroll";
   const promptText = tail(draft, Math.max(1, textW - 2));
 
   return (
@@ -38,15 +66,19 @@ export function AskPanel({ messages, draft, asking, width, height }) {
         {messages.length === 0 ? (
           <Text dimColor wrap="wrap">Ask about the diff, or ask for changes — this chat can edit files. Follow-ups keep the conversation going.</Text>
         ) : (
-          shown.map((r, i) =>
-            r.role === "user" ? (
-              <Text key={i} color="cyan" wrap="truncate">{r.text}</Text>
-            ) : r.role === "dim" ? (
-              <Text key={i} dimColor wrap="truncate">{r.text}</Text>
-            ) : (
-              <Text key={i} wrap="truncate">{r.text || " "}</Text>
-            ),
-          )
+          <>
+            {above > 0 && <Text dimColor>↑ {above} more line{above === 1 ? "" : "s"}</Text>}
+            {shown.map((r, i) =>
+              r.role === "user" ? (
+                <Text key={i} color="cyan" wrap="truncate">{r.text}</Text>
+              ) : r.role === "dim" ? (
+                <Text key={i} dimColor wrap="truncate">{r.text}</Text>
+              ) : (
+                <Text key={i} wrap="truncate">{r.text || " "}</Text>
+              ),
+            )}
+            {below > 0 && <Text dimColor>↓ {below} more line{below === 1 ? "" : "s"}</Text>}
+          </>
         )}
       </Box>
       <Text wrap="truncate">

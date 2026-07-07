@@ -103,7 +103,7 @@ orbit-diff main..feature    # a branch range, PR-style
 | `r` | open the **submit** picker: apply via Claude Code (or *send to the Claude pane* in a managed review window), post to the GitHub PR (when one exists), or copy |
 | `R` | reload the diff — pick up edits Claude made in its pane |
 | `A` | **AI review** of the diff — findings stream into a side panel (`↑↓`/`j` `k` move · `Enter` jump to it · `p` promote to an annotation · `Esc` close) |
-| `?` | **ask** the model a question about the diff / codebase — the answer streams into a panel (`Esc` close) |
+| `?` | **ask** the model a question about the diff / codebase — the answer streams into a panel (`Ctrl-u`/`Ctrl-d` scroll the transcript · `Esc` close) |
 | `Enter` | rail → focus diff · find → jump to first match |
 | `Esc` | while typing: cancel · selecting: cancel the selection · normal: clear an applied filter/search |
 | `q` / `Ctrl-c` | quit |

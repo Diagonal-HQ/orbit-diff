@@ -5,7 +5,7 @@ import { Box, Text, useApp, useInput } from "ink";
 import { changeRequestPath, tildeify } from "./paths.mjs";
 import { Sidebar } from "./Sidebar.jsx";
 import { DiffPanel } from "./DiffPanel.jsx";
-import { AskPanel } from "./AskPanel.jsx";
+import { AskPanel, askPanelMetrics, flattenAskRows } from "./AskPanel.jsx";
 import { useDimensions } from "./useDimensions.mjs";
 import { copyViaOSC52 } from "./clipboard.mjs";
 import { sendLine, paneAlive } from "./tmux.mjs";
@@ -88,6 +88,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   const [askDraft, setAskDraft] = useState(""); // question currently being typed
   const [askMessages, setAskMessages] = useState([]); // chat transcript: {role, text}
   const [asking, setAsking] = useState(false); // an answer is streaming
+  const [askScroll, setAskScroll] = useState(0); // rows scrolled up from the newest text (0 = pinned to bottom)
   const aiRef = useRef(null); // memoized { config, orchestrator, preflight } once loaded
   const reviewToken = useRef(0); // guards stale async review callbacks
   const askToken = useRef(0); // guards stale async ask callbacks
@@ -600,6 +601,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
     setAskDraft("");
     setAskMessages([]);
     setAsking(false);
+    setAskScroll(0);
     setMode("ask");
   };
 
@@ -654,6 +656,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
     const token = ++askToken.current;
     setAskDraft("");
     setAsking(true);
+    setAskScroll(0); // snap to the bottom so the new answer streams into view
     setAskMessages((ms) => [...ms, { role: "user", text: q }, { role: "assistant", text: "" }]);
     askConvo.current
       .ask(q, (delta) => {
@@ -697,6 +700,13 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       if (key.escape) {
         closeAsk();
         return setMode("normal");
+      }
+      if (key.ctrl && (input === "d" || input === "u")) {
+        const { bodyH: askBodyH, textW: askTextW } = askPanelMetrics(aiW, bodyH);
+        const maxScroll = Math.max(0, flattenAskRows(askMessages, asking, askTextW).length - askBodyH);
+        if (maxScroll <= 0) return;
+        const step = Math.max(1, Math.floor(askBodyH / 2));
+        return setAskScroll((s) => Math.max(0, Math.min(maxScroll, s + (input === "d" ? -step : step))));
       }
       if (key.return) return sendAsk(); // send the follow-up (no-op while streaming)
       if (key.backspace || key.delete) return setAskDraft((d) => d.slice(0, -1));
@@ -922,6 +932,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
             draft={askDraft}
             messages={askMessages}
             asking={asking}
+            scroll={askScroll}
             width={leftW}
             height={bodyH}
           />
@@ -1009,7 +1020,7 @@ function StatusBar({
     return <Bar><Text color="blueBright">AI review</Text><Dim> · confirm in the panel · </Dim><Text color="green">enter</Text><Dim> run · esc cancel</Dim></Bar>;
   }
   if (mode === "ask") {
-    return <Bar><Text color="blueBright">chat</Text><Dim> · ask or request changes · enter send · esc close</Dim></Bar>;
+    return <Bar><Text color="blueBright">chat</Text><Dim> · ask or request changes · enter send · ^u/^d scroll · esc close</Dim></Bar>;
   }
   if (toast) {
     return <Bar><Text color="green">✓ </Text><Text>{toast}</Text></Bar>;
