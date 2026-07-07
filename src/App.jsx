@@ -185,7 +185,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
   // The ask panel (streamed answer) wants a bit more room to read.
   const aiW = clamp(sideW ?? Math.floor(cols * 0.42), 34, sideMax);
   const isAiPanel = mode === "ask";
-  const leftW = mode === "comment" || mode === "submit" ? editorW : isAiPanel ? aiW : sidebarW;
+  const leftW = mode === "comment" || mode === "submit" || mode === "reviewConfirm" ? editorW : isAiPanel ? aiW : sidebarW;
   const diffW = cols - leftW;
   // Panels + status bar total rows-1, leaving one spare terminal row. Rendering
   // the *full* height makes the terminal scroll each frame, which drops Ink out
@@ -863,6 +863,13 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
             width={leftW}
             height={bodyH}
           />
+        ) : mode === "reviewConfirm" ? (
+          <ReviewConfirmMenu
+            verb={findings.length ? "Re-run" : "Run"}
+            fileCount={files.length}
+            width={leftW}
+            height={bodyH}
+          />
         ) : mode === "ask" ? (
           <AskPanel
             draft={askDraft}
@@ -894,7 +901,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, activeBg
         <DiffPanel
           file={selectedFile}
           scroll={scroll}
-          focused={focus === "diff" && mode !== "files" && mode !== "comment" && mode !== "submit" && mode !== "ask"}
+          focused={focus === "diff" && mode !== "files" && mode !== "comment" && mode !== "submit" && mode !== "reviewConfirm" && mode !== "ask"}
           width={diffW}
           height={bodyH}
           query={lineQuery}
@@ -952,8 +959,7 @@ function StatusBar({
     return <Bar><Text color="cyan">submit</Text><Dim> · choose a target in the panel · ↑↓ move · enter choose · esc cancel</Dim></Bar>;
   }
   if (mode === "reviewConfirm") {
-    const verb = reviewCount ? "Re-run" : "Run";
-    return <Bar><Text color="blueBright">AI review</Text><Dim> · {verb} over {fileCount} file{fileCount === 1 ? "" : "s"}? · </Dim><Text color="green">enter</Text><Dim> run · esc cancel</Dim></Bar>;
+    return <Bar><Text color="blueBright">AI review</Text><Dim> · confirm in the panel · </Dim><Text color="green">enter</Text><Dim> run · esc cancel</Dim></Bar>;
   }
   if (mode === "ask") {
     return <Bar><Text color="blueBright">chat</Text><Dim> · ask or request changes · enter send · esc close</Dim></Bar>;
@@ -1038,6 +1044,24 @@ function SubmitMenu({ options, selected, count, width, height }) {
         })}
       </Box>
       <Text dimColor wrap="truncate">↑↓ move · enter choose · esc cancel</Text>
+    </Box>
+  );
+}
+
+// Left-column confirmation (mode === "reviewConfirm") for kicking off an AI
+// review, mirroring the submit picker's layout so the diff stays on the right.
+function ReviewConfirmMenu({ verb, fileCount, width, height }) {
+  return (
+    <Box flexDirection="column" width={width} height={height} borderStyle="round" borderColor="blueBright" paddingX={1}>
+      <Text bold color="blueBright" wrap="truncate">
+        {verb} AI review
+      </Text>
+      <Box marginTop={1} flexGrow={1}>
+        <Text wrap="wrap">
+          {verb} an AI review over {fileCount} file{fileCount === 1 ? "" : "s"}? Findings stream into the AI Review section as each file finishes.
+        </Text>
+      </Box>
+      <Text dimColor wrap="truncate">enter run · esc cancel</Text>
     </Box>
   );
 }
