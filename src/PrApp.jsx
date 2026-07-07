@@ -298,7 +298,10 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
     if (input === "o") return openInBrowser(current);
   });
 
-  const bodyH = Math.max(6, rows - 2); // rows between the title and status bars
+  // Leave the last terminal row untouched: filling it makes the terminal scroll,
+  // which forces Ink into a full-screen clear+repaint (the flash). The body sits
+  // between the header and status bars within that rows-1 budget.
+  const bodyH = Math.max(6, rows - 3);
   const topH = Math.max(4, Math.min(Math.floor(bodyH * 0.45), Math.max(list.length, worktrees.length) + 3));
   const lowerH = Math.max(3, bodyH - topH);
   // One shared column split, so the top and bottom panes line up vertically.
@@ -309,7 +312,7 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, finis
   const countLabel = loading ? "loading…" : query ? `${list.length}/${all.length}` : `${all.length} open`;
 
   return (
-    <Box flexDirection="column" width={cols} height={rows}>
+    <Box flexDirection="column" width={cols} height={rows - 1}>
       <Box height={1} width={cols}>
         <Box flexGrow={1} flexShrink={1} minWidth={0}>
           <Text wrap="truncate">
