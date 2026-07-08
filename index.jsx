@@ -5,6 +5,7 @@ import { render } from "ink";
 import { loadDiff, parseDiff, defaultSource } from "./src/git.mjs";
 import { App } from "./src/App.jsx";
 import { inPlaceStdout } from "./src/inplace-stdout.mjs";
+import { scrollLock } from "./src/scroll-lock.mjs";
 import { VERSION } from "./src/version.mjs";
 
 // Everything after the script name is passed straight to `git diff`.
@@ -148,14 +149,21 @@ spawnWatchdog();
 // `handoff.doc`. In that case we hand the *bare* terminal to an interactive
 // `claude` session so they can watch it work and answer any questions, then
 // reload the diff and re-launch the viewer on the result.
+// Mouse tracking should only be live while our own Ink view has the
+// terminal — turned off around the `claude` handoff below so its session
+// isn't fighting the same escape sequences.
+const { stdin: lockedStdin, enable: enableScrollLock, disable: disableScrollLock } = scrollLock();
+
 let current = files;
 while (true) {
   const handoff = { doc: null };
+  enableScrollLock();
   const app = render(
     <App files={current} reloadDiff={() => parseDiff(loadDiff(args))} source={source} handoff={handoff} claudePane={claudePane} activeBg={activeBg} selectBg={selectBg} addBg={addBg} delBg={delBg} />,
-    { exitOnCtrlC: true, stdout: inPlaceStdout(process.stdout) },
+    { exitOnCtrlC: true, stdout: inPlaceStdout(process.stdout), stdin: lockedStdin },
   );
   await app.waitUntilExit();
+  disableScrollLock();
   // Clear the viewer's final frame so nothing bleeds into what comes next.
   process.stdout.write("\x1b[2J\x1b[H");
 

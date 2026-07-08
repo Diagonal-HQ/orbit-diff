@@ -375,3 +375,10 @@ to run interactively.
   background, detected at startup via an OSC 11 query so it adapts to light and
   dark themes. Terminals that don't answer (some over multiplexers) fall back to
   a dark-tuned default after a brief timeout.
+- Mouse wheel / trackpad scrolling is intentionally inert while orbit-diff is
+  open (use `j`/`k`, arrows, or `PgUp`/`PgDn` instead) — the viewer repaints in
+  place rather than using the terminal's alternate screen buffer, so a native
+  scroll would otherwise reveal stale, half-overwritten frames. This works by
+  enabling terminal mouse tracking, which also means click-drag text selection
+  needs its bypass modifier while it's running (Option on Terminal.app/iTerm2,
+  Shift on most Linux terminals).
