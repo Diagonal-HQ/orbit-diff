@@ -269,8 +269,13 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, start
   const topH = Math.max(4, Math.min(Math.floor(bodyH * 0.45), Math.max(list.length, worktrees.length) + 3));
   const lowerH = Math.max(3, bodyH - topH);
   // One shared column split, so the top and bottom panes line up vertically.
-  const leftW = Math.max(24, Math.floor(cols * 0.6));
-  const rightW = Math.max(20, cols - leftW);
+  // The right rail only needs to fit a worktree row like
+  // "⧉  seer/fix/diagonal-b9-filter-empty-target-id #4341 EV10" (57 chars)
+  // without truncating, so keep it that narrow unless the terminal is wide
+  // enough that 30% would be even smaller.
+  const RIGHT_MIN_W = 57 + 4; // content width + border/padding
+  const rightW = Math.max(RIGHT_MIN_W, Math.floor(cols * 0.3));
+  const leftW = Math.max(24, cols - rightW);
   const ov = current ? details[current.number] : undefined;
 
   // Reset the description scroll whenever the highlighted PR changes.
