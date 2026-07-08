@@ -60,16 +60,17 @@ export function paneAlive(pane) {
 
 // Build the detached four-pane review window for a worktree:
 //
-//   ┌─ status ─┬──────── claude ───────┐
-//   ├──────────┤                       │
-//   │  setup   │                       │
-//   ├────────────── orbit-diff ────────┤
-//   └───────────────────────────────────┘
+//   ┌ status ┬─────────── claude ────────────┐
+//   ├────────┤                                │
+//   │ setup  │                                │
+//   ├────────────────── orbit-diff ───────────┤
+//   └────────────────────────────────────────-┘
 //
-// Created with `new-window -d`, so it never steals the current view. Returns
-// { window, panes: { status, setup, claude, diff } } or { error } (with
-// `window` set if the window was created before a later step failed, so the
-// caller can record it for cleanup).
+// The left column (status + setup) is 30% of the top row's width; Claude gets
+// the rest. Created with `new-window -d`, so it never steals the current
+// view. Returns { window, panes: { status, setup, claude, diff } } or
+// { error } (with `window` set if the window was created before a later step
+// failed, so the caller can record it for cleanup).
 export function buildReviewWindow({ worktreePath, name, statusCmd, setupCmd, claudeCmd, diffCmd }) {
   if (!inTmux()) return { error: "not inside tmux — start tmux to open a review window" };
 
@@ -92,17 +93,23 @@ export function buildReviewWindow({ worktreePath, name, statusCmd, setupCmd, cla
   if (top.status !== 0) return { error: (top.stderr || "tmux split-window failed").trim(), window };
   const setupPane = top.stdout.trim();
 
-  // 3. Split the top row left|right → Claude to the right of setup.
+  // 3. Split the top row left|right → Claude to the right of setup, taking
+  //    70% of the row's width (setup + status keep the other 30%: they're
+  //    short-line status text and a script runner, not code, so they don't
+  //    need much room).
   const right = tmux([
-    "split-window", "-h", "-t", setupPane, "-c", worktreePath, "-P", "-F", "#{pane_id}",
+    "split-window", "-h", "-l", "70%", "-t", setupPane, "-c", worktreePath, "-P", "-F", "#{pane_id}",
   ]);
   if (right.status !== 0) return { error: (right.stderr || "tmux split-window failed").trim(), window };
   const claudePane = right.stdout.trim();
 
   // 4. Split the setup pane again, stacking a short status pane ABOVE it (-b,
-  //    -v): branch/PR/env info, fixed-height since it's a short summary block.
+  //    -v): branch/PR/env info. Fixed at 8 lines — exactly the most that
+  //    render() in pr-status.mjs ever prints (branch, blank, PR, Assignee,
+  //    Reviewers, Checks, blank, Env) — so it's as tight as it can be without
+  //    clipping that content.
   const above = tmux([
-    "split-window", "-b", "-v", "-l", "9", "-t", setupPane, "-c", worktreePath,
+    "split-window", "-b", "-v", "-l", "8", "-t", setupPane, "-c", worktreePath,
     "-P", "-F", "#{pane_id}",
   ]);
   if (above.status !== 0) return { error: (above.stderr || "tmux split-window failed").trim(), window };

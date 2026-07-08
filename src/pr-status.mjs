@@ -71,7 +71,11 @@ async function render() {
   lines.push("");
   lines.push(row("Env", envLine(sessionForWorktree(repoRoot()))));
 
-  process.stdout.write("\x1b[2J\x1b[H" + lines.join("\n") + "\n");
+  // No trailing newline: the pane is sized to exactly fit these 8 lines
+  // (see buildReviewWindow's status split), and one more would push the
+  // cursor onto a 9th row that doesn't exist, scrolling the branch name
+  // (line 1) off the top.
+  process.stdout.write("\x1b[2J\x1b[H" + lines.join("\n"));
 }
 
 export async function runPrStatus() {
