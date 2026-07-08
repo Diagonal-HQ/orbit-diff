@@ -1123,7 +1123,8 @@ function StatusBar({
       <Text color="blueBright">A</Text><Dim> ai · </Dim>
       <Text color="blueBright">?</Text><Dim> ask · </Dim>
       <Text color="cyan">/</Text><Dim> files · </Dim>
-      <Text color="magenta">f</Text><Dim> find · q quit{sel}{nav} · {source}</Dim>
+      <Text color="magenta">f</Text><Dim> find · </Dim>
+      <Text color="green">R</Text><Dim> refresh · q quit{sel}{nav} · {source}</Dim>
     </Bar>
   );
 }
