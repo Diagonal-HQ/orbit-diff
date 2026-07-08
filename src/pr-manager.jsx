@@ -24,6 +24,7 @@ import {
   buildReviewWindow,
 } from "./tmux.mjs";
 import { sessionKey, sessionPath, writeSession, updateSession, deleteSession, listSessions } from "./session.mjs";
+import { spawnWatchdog } from "./watchdog.mjs";
 
 // Filesystem-safe slug for a branch name in a log filename.
 function slug(s) {
@@ -41,6 +42,11 @@ function windowName(wt) {
 }
 
 export async function runPrManager() {
+  // Guard against a known Bun runtime bug that can wedge this process at 100%
+  // CPU (see src/watchdog.mjs) — PrApp renders via Ink too, so it's in scope
+  // even though the AI-streaming trigger lives in the main viewer.
+  spawnWatchdog();
+
   const config = await loadConfig();
   if (config.warning) console.error(`\x1b[2morbit-diff: ${config.warning}\x1b[0m`);
 

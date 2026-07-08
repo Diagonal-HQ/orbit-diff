@@ -29,6 +29,15 @@ if (args[0] === "prs" || args[0] === "pr") {
   await runPrManager();
   process.exit(0);
 }
+// `orbit-diff __watchdog <pid>` — internal. The sidecar process spawned by
+// spawnWatchdog() to watch a viewer/prs process from outside and kill it if a
+// Bun runtime bug (see src/watchdog.mjs) wedges it at 100% CPU. Never launched
+// directly by a user.
+if (args[0] === "__watchdog") {
+  const { runWatchdog } = await import("./src/watchdog.mjs");
+  await runWatchdog(args[1]);
+  process.exit(0);
+}
 // `orbit-diff pr-status` — runs in the review window's status pane, polling
 // the worktree's branch/PR/env state on a timer. Never returns on its own;
 // the pane goes away when the review window is torn down.
@@ -127,6 +136,12 @@ if (process.env.TMUX) {
     /* best-effort — fall back to the quit-and-handoff path */
   }
 }
+
+// Guard against a known Bun runtime bug that can wedge this process at 100%
+// CPU (see src/watchdog.mjs) — spawned once, watches this pid for the whole
+// handoff loop below, and exits on its own once we do.
+const { spawnWatchdog } = await import("./src/watchdog.mjs");
+spawnWatchdog();
 
 // The review loop. render the viewer; when it exits, either the user quit (done)
 // or they pressed `r` to apply their annotations, leaving a change-request doc in
