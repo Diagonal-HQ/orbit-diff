@@ -34,15 +34,24 @@ const safeCall = (fn) => {
 // `enter` jumps to a worktree's tmux window, `o` opens its PR, and `d` also
 // tears it down), `n` opens a prompt for a branch name and hands it to
 // `startLocal` — the same worktree + review window as a PR, but on a brand-new
-// local branch with no PR behind it — and `/` filters the list.
-export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, startLocal, finishReview, openUrl, openWorktree, config }) {
+// local branch with no PR behind it — `/` filters the list, and `left`/`right`
+// switch between the "Mine" tab (assigned to or awaiting review from you) and
+// "All" (every open PR in the repo) — each tab fetches its own list, cached
+// until the next `r` refresh.
+export function PrApp({ loadPRs, loadAllPRs, loadWorktrees, loadSessions, startReview, startLocal, finishReview, openUrl, openWorktree, config }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
-  // prs: null = still loading · array = loaded (possibly empty). loadError holds
-  // a message when `gh` couldn't answer at all (not a repo, not authed, …).
-  const [prs, setPrs] = useState(null);
-  const [loadError, setLoadError] = useState(null);
+  // Which tab is showing: "mine" (assigned to or awaiting review from you, the
+  // original view) or "all" (every open PR in the repo). Each keeps its own
+  // cached list/error, keyed by view, so switching tabs doesn't refetch a list
+  // you've already loaded this session.
+  const [view, setView] = useState("mine"); // "mine" | "all"
+  // prsByView[view]: null = still loading · array = loaded (possibly empty).
+  // errorByView[view] holds a message when `gh` couldn't answer at all (not a
+  // repo, not authed, …).
+  const [prsByView, setPrsByView] = useState({ mine: null, all: null });
+  const [errorByView, setErrorByView] = useState({ mine: null, all: null });
   const [worktrees, setWorktrees] = useState([]);
   // Review sessions orbit-diff owns (from the session registry): drives the
   // per-PR "provisioning" spinner and the env-instance tags.
@@ -63,33 +72,41 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, start
   const requested = useRef(new Set());
   const [reloadTick, setReloadTick] = useState(0);
 
-  // Fetch (and refetch) the PR list + worktrees. Worktrees are a fast local git
-  // call, so we set them immediately; the PR list arrives asynchronously.
+  // `r` (via reloadTick): invalidate both tabs' cached PR lists (so switching
+  // tabs after a refresh re-fetches rather than showing stale data) and refetch
+  // worktrees/sessions — a fast local read, so set immediately.
   useEffect(() => {
-    let live = true;
-    setPrs(null);
-    setLoadError(null);
+    setPrsByView({ mine: null, all: null });
+    setErrorByView({ mine: null, all: null });
     requested.current = new Set();
     setDetails({});
     setWorktrees(safeCall(loadWorktrees));
     setSessions(safeCall(loadSessions));
-    loadPRs().then(
+  }, [reloadTick, loadWorktrees, loadSessions]);
+
+  // Fetch the active tab's PR list the first time it's viewed (or after `r`
+  // cleared its cache above). Only re-runs when this tab's own cache is null —
+  // switching to an already-loaded tab is instant.
+  useEffect(() => {
+    if (prsByView[view] !== null) return;
+    let live = true;
+    const loader = view === "all" ? loadAllPRs : loadPRs;
+    loader().then(
       (loaded) => {
         if (!live) return;
-        setPrs(loaded);
+        setPrsByView((s) => ({ ...s, [view]: loaded }));
         setSelected((s) => clampIdx(s, loaded.length));
       },
       (err) => {
-        if (live) {
-          setPrs([]);
-          setLoadError(err.message || String(err));
-        }
+        if (!live) return;
+        setPrsByView((s) => ({ ...s, [view]: [] }));
+        setErrorByView((s) => ({ ...s, [view]: err.message || String(err) }));
       },
     );
     return () => {
       live = false;
     };
-  }, [loadPRs, loadWorktrees, loadSessions, reloadTick]);
+  }, [view, prsByView, loadPRs, loadAllPRs]);
 
   // Auto-refresh just the worktrees pane on an interval (a cheap local git call,
   // so we poll it without touching the PR list). 0 disables.
@@ -133,16 +150,18 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, start
     return () => clearTimeout(id);
   }, [toast]);
 
+  const prs = prsByView[view];
+  const loadError = errorByView[view];
   const loading = prs === null;
-  const all = prs || [];
+  const loadedPrs = prs || [];
   // Branch → worktree, for both the PR indicator and the worktrees pane's PR tags.
   const wtByBranch = new Map(worktrees.filter((w) => w.branch).map((w) => [w.branch, w]));
-  const prByBranch = new Map(all.map((p) => [p.headRefName, p.number]));
+  const prByBranch = new Map(loadedPrs.map((p) => [p.headRefName, p.number]));
   // Branch/path → session, for the spinner and env-instance tags.
   const sessionByBranch = new Map(sessions.filter((s) => s.branch).map((s) => [s.branch, s]));
   const sessionByPath = new Map(sessions.map((s) => [s.worktreePath, s]));
 
-  const list = filterPRs(all, query);
+  const list = filterPRs(loadedPrs, query);
   const current = list[selected] || null;
   // Worktree selection, clamped to the live list (it can shrink on refresh).
   const wtSel = worktrees.length ? clampIdx(selectedWt, worktrees.length) : 0;
@@ -225,7 +244,7 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, start
   const finishWorktree = (wt) => {
     if (!wt) return;
     const prNum = wt.branch ? prByBranch.get(wt.branch) : undefined;
-    const matched = prNum ? all.find((p) => p.number === prNum) : null;
+    const matched = prNum ? loadedPrs.find((p) => p.number === prNum) : null;
     const target = matched
       ? { ...matched, path: wt.path }
       : { headRefName: wt.branch || "", path: wt.path };
@@ -256,7 +275,7 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, start
   const openWorktreePr = (wt) => {
     if (!wt) return;
     const prNum = wt.branch ? prByBranch.get(wt.branch) : undefined;
-    const matched = prNum ? all.find((p) => p.number === prNum) : null;
+    const matched = prNum ? loadedPrs.find((p) => p.number === prNum) : null;
     if (!matched) return setToast(wt.branch ? `no open PR for ${wt.branch}` : "no PR for this worktree");
     openInBrowser(matched);
   };
@@ -337,6 +356,15 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, start
       // worktrees when there are any).
       return setFocus((f) => (f === "prs" && worktrees.length ? "worktrees" : "prs"));
     }
+    if (key.leftArrow || key.rightArrow) {
+      // Switch between the "Mine" and "All" tabs. Resets the selection so you
+      // don't land on an unrelated row from the other tab's list.
+      const next = key.rightArrow ? "all" : "mine";
+      if (next === view) return;
+      setToast(null);
+      setSelected(0);
+      return setView(next);
+    }
 
     // ---- Worktrees pane focused ----
     if (paneFocus === "worktrees") {
@@ -375,7 +403,7 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, start
     }
   });
 
-  const countLabel = loading ? "loading…" : query ? `${list.length}/${all.length}` : `${all.length} open`;
+  const countLabel = loading ? "loading…" : query ? `${list.length}/${loadedPrs.length}` : `${loadedPrs.length} open`;
 
   return (
     <Box flexDirection="column" width={cols} height={rows - 1}>
@@ -384,7 +412,10 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, start
           <Text wrap="truncate">
             {" "}
             <Text bold color="magenta">orbit-diff</Text>
-            <Text dimColor> · PRs for me</Text>
+            <Text dimColor> · </Text>
+            <Tab label="Mine" active={view === "mine"} />
+            <Text dimColor> </Text>
+            <Tab label="All" active={view === "all"} />
             <Text dimColor>  ({countLabel})</Text>
           </Text>
         </Box>
@@ -404,6 +435,7 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, start
           focused={paneFocus === "prs"}
           query={query}
           searching={mode === "search"}
+          view={view}
           wtBranches={wtByBranch}
           sessionByBranch={sessionByBranch}
           width={leftW}
@@ -438,7 +470,7 @@ export function PrApp({ loadPRs, loadWorktrees, loadSessions, startReview, start
 
 // Top-left rail: one row per PR — review-state glyph, a `⧉` when the branch is
 // already checked out in a local worktree, #number, and the title.
-function PrList({ prs, loading, error, selected, focused, query, searching, wtBranches, sessionByBranch, width, height }) {
+function PrList({ prs, loading, error, selected, focused, query, searching, view, wtBranches, sessionByBranch, width, height }) {
   const listRoom = Math.max(1, height - 2 - 1); // minus border rows and the header
   const start = Math.max(0, Math.min(selected - Math.floor(listRoom / 2), Math.max(0, prs.length - listRoom)));
   const window = prs.slice(start, start + listRoom);
@@ -454,7 +486,9 @@ function PrList({ prs, loading, error, selected, focused, query, searching, wtBr
       {loading && <Text dimColor>loading… (q to quit)</Text>}
       {!loading && error && <Text color="red" wrap="truncate">{error}</Text>}
       {!loading && !error && prs.length === 0 && (
-        <Text dimColor>{query ? "no PRs match" : "nothing assigned to or awaiting you"}</Text>
+        <Text dimColor>
+          {query ? "no PRs match" : view === "all" ? "no open PRs in this repo" : "nothing assigned to or awaiting you"}
+        </Text>
       )}
       {window.map((pr, i) => {
         const idx = start + i;
@@ -764,6 +798,15 @@ function MergeState({ pr }) {
   return <Text dimColor>{(pr.mergeable || "unknown").toLowerCase()}</Text>;
 }
 
+// One entry in the header's Mine/All tab bar (switched with ←/→).
+function Tab({ label, active }) {
+  return active ? (
+    <Text bold color="cyan">{label}</Text>
+  ) : (
+    <Text dimColor>{label}</Text>
+  );
+}
+
 function SearchBar({ query, count }) {
   return (
     <Box height={1}>
@@ -811,7 +854,7 @@ function StatusBar({ focus, setupCmd, inTmux }) {
     <Box height={1}>
       <Text wrap="truncate">
         {" "}
-        <Text dimColor>↑↓/jk</Text> move  <Text bold>tab</Text> pane  {actions}  <Text bold>n</Text> new  <Text bold>/</Text> search  <Text bold>r</Text> refresh  <Text bold>q</Text> quit
+        <Text dimColor>↑↓/jk</Text> move  <Text dimColor>←→</Text> tab  <Text bold>tab</Text> pane  {actions}  <Text bold>n</Text> new  <Text bold>/</Text> search  <Text bold>r</Text> refresh  <Text bold>q</Text> quit
         {focus !== "worktrees" && setupCmd ? <Text dimColor>   ⚙ {setupCmd}</Text> : null}
       </Text>
     </Box>
