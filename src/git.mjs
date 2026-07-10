@@ -40,9 +40,9 @@ export function listWorktrees() {
 // exists locally, check it out; otherwise fetch it and create a local branch
 // tracking origin/<branch>. Returns { ok } or { ok:false, error }.
 export function addWorktree(path, branch) {
-  // Best-effort fetch so a PR branch that only exists on the remote is available
-  // (ignore failure — a local-only branch won't be on origin).
-  git(["fetch", "origin", branch]);
+  // Best-effort fetch so origin's refs (the PR branch, and anything else) are
+  // current before we look them up (ignore failure — offline/no-remote is fine).
+  git(["fetch", "origin"]);
   const local = git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).status === 0;
   const res = local
     ? git(["worktree", "add", path, branch])
@@ -56,14 +56,31 @@ export function addWorktree(path, branch) {
 // Create a worktree on a brand-new local branch — unlike addWorktree (which
 // checks out a branch that already exists, local or on origin), this is for
 // starting something from scratch that isn't tied to any PR. `base` is the ref
-// the new branch starts from (defaults to HEAD, i.e. wherever this repo is
-// currently checked out). Returns { ok, path } or { ok:false, error }.
-export function createWorktree(path, branch, base = "HEAD") {
-  const res = git(["worktree", "add", "-b", branch, path, base]);
+// the new branch starts from; when omitted, defaults to origin's default
+// branch (e.g. "origin/main") *after* fetching, so ad-hoc worktrees start from
+// up-to-date main rather than whatever this repo's local checkout happens to
+// be at. Returns { ok, path } or { ok:false, error }.
+export function createWorktree(path, branch, base) {
+  // Best-effort fetch so origin's refs are current before branching off (ignore
+  // failure — offline/no-remote is fine).
+  git(["fetch", "origin"]);
+  const ref = base || originDefaultBranch();
+  const res = git(["worktree", "add", "-b", branch, path, ref]);
   if (res.status !== 0) {
     return { ok: false, error: (res.stderr || "git worktree add failed").trim() };
   }
   return { ok: true, path };
+}
+
+// Origin's default branch as a remote-tracking ref (e.g. "origin/main"),
+// resolved from origin/HEAD. Falls back to the local "HEAD" if there's no
+// remote to ask (e.g. no origin configured, or origin/HEAD was never set).
+function originDefaultBranch() {
+  const originHead = git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]);
+  if (originHead.status === 0 && originHead.stdout.trim()) {
+    return originHead.stdout.trim().replace("refs/remotes/", "");
+  }
+  return "HEAD";
 }
 
 // Remove a worktree (force, so a dirty tree still goes). Returns { ok } /
