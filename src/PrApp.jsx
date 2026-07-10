@@ -413,10 +413,9 @@ export function PrApp({ loadPRs, loadAllPRs, loadWorktrees, loadSessions, startR
             {" "}
             <Text bold color="magenta">orbit-diff</Text>
             <Text dimColor> · </Text>
-            <Tab label="Mine" active={view === "mine"} />
-            <Text dimColor> </Text>
-            <Tab label="All" active={view === "all"} />
-            <Text dimColor>  ({countLabel})</Text>
+            <Tab label="Mine" active={view === "mine"} count={view === "mine" ? countLabel : null} />
+            <Text dimColor>  </Text>
+            <Tab label="All" active={view === "all"} count={view === "all" ? countLabel : null} />
           </Text>
         </Box>
         {toast ? (
@@ -798,10 +797,12 @@ function MergeState({ pr }) {
   return <Text dimColor>{(pr.mergeable || "unknown").toLowerCase()}</Text>;
 }
 
-// One entry in the header's Mine/All tab bar (switched with ←/→).
-function Tab({ label, active }) {
+// One entry in the header's Mine/All tab bar (switched with ←/→). The active
+// tab carries its own PR count so the parens read as belonging to it, not
+// floating ambiguously after both labels.
+function Tab({ label, active, count }) {
   return active ? (
-    <Text bold color="cyan">{label}</Text>
+    <Text bold color="cyan">{label}{count ? ` (${count})` : ""}</Text>
   ) : (
     <Text dimColor>{label}</Text>
   );
