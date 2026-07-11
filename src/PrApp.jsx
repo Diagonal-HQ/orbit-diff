@@ -1,6 +1,8 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import { useDimensions } from "./useDimensions.mjs";
+import { copyEverywhere } from "./clipboard.mjs";
+import { useMouseSelection } from "./mouse-select.mjs";
 import { prOverview, renderCommand, checkState } from "./pr.mjs";
 import { tildeify } from "./paths.mjs";
 import { markdownLines } from "./markdown.mjs";
@@ -38,7 +40,7 @@ const safeCall = (fn) => {
 // switch between the "Mine" tab (assigned to or awaiting review from you) and
 // "All" (every open PR in the repo) — each tab fetches its own list, cached
 // until the next `r` refresh.
-export function PrApp({ loadPRs, loadAllPRs, loadWorktrees, loadSessions, startReview, startLocal, finishReview, openUrl, openWorktree, config }) {
+export function PrApp({ loadPRs, loadAllPRs, loadWorktrees, loadSessions, startReview, startLocal, finishReview, openUrl, openWorktree, config, mouse = null }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
@@ -61,6 +63,12 @@ export function PrApp({ loadPRs, loadAllPRs, loadWorktrees, loadSessions, startR
   const [descScroll, setDescScroll] = useState(0); // scroll offset into the description pane
   const [focus, setFocus] = useState("prs"); // "prs" | "worktrees"
   const [toast, setToast] = useState(null);
+  const copySelection = useCallback((text) => {
+    const err = copyEverywhere(text);
+    const n = text.split("\n").length;
+    setToast(err ? `could not copy selection: ${err.message}` : `copied ${n} line${n === 1 ? "" : "s"}`);
+  }, []);
+  useMouseSelection(mouse, copySelection);
   const [mode, setMode] = useState("normal"); // "normal" | "search" | "newWorktree"
   const [query, setQuery] = useState("");
   const [newWtName, setNewWtName] = useState(""); // branch name being typed for `n`

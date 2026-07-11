@@ -10,8 +10,7 @@ import { mkdirSync, openSync, closeSync, existsSync } from "node:fs";
 import { dirname, basename } from "node:path";
 import { render } from "ink";
 import { PrApp } from "./PrApp.jsx";
-import { inPlaceStdout } from "./inplace-stdout.mjs";
-import { scrollLock } from "./scroll-lock.mjs";
+import { createMouseController } from "./mouse-select.mjs";
 import { listReviewPRs, listAllPRs, renderCommand, renderPath, shq } from "./pr.mjs";
 import { listWorktrees, addWorktree, createWorktree, removeWorktree } from "./git.mjs";
 import { loadConfig, CONFIG_HINT } from "./ai/config.mjs";
@@ -276,7 +275,8 @@ export async function runPrManager() {
     return { ok: !error, error, killed, removed, ranDone: !!doneCmd, logPath };
   };
 
-  const { stdin: lockedStdin, enable: enableScrollLock, disable: disableScrollLock } = scrollLock();
+  const mouse = createMouseController(process.stdout);
+  const { stdin: lockedStdin, enable: enableScrollLock, disable: disableScrollLock } = mouse;
   enableScrollLock();
   const app = render(
     <PrApp
@@ -290,8 +290,9 @@ export async function runPrManager() {
       openUrl={openUrl}
       openWorktree={openWorktree}
       config={config}
+      mouse={mouse}
     />,
-    { exitOnCtrlC: true, stdout: inPlaceStdout(process.stdout), stdin: lockedStdin },
+    { exitOnCtrlC: true, stdout: mouse.stdout, stdin: lockedStdin },
   );
   await app.waitUntilExit();
   disableScrollLock();

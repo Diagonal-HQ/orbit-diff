@@ -13,17 +13,21 @@
 const ERASE_LINE = "\x1b[2K";
 const ERASE_RUN = /^\x1b\[2K(?:\x1b\[1A\x1b\[2K)*\x1b\[G/;
 
+// Strip just the `ESC[2K` erases from a frame's leading cursor-movement run,
+// leaving the cursor-up moves so Ink overwrites in place. Exported so the mouse
+// controller can apply the same transform before it captures/highlights a frame.
+export function stripEraseRun(chunk) {
+  if (typeof chunk !== "string") return chunk;
+  const run = chunk.match(ERASE_RUN);
+  return run ? run[0].split(ERASE_LINE).join("") + chunk.slice(run[0].length) : chunk;
+}
+
 export function inPlaceStdout(stream = process.stdout) {
   return new Proxy(stream, {
     get(target, prop) {
       if (prop === "write") {
         return (chunk, ...rest) => {
-          if (typeof chunk === "string") {
-            const run = chunk.match(ERASE_RUN);
-            if (run) {
-              chunk = run[0].split(ERASE_LINE).join("") + chunk.slice(run[0].length);
-            }
-          }
+          if (typeof chunk === "string") chunk = stripEraseRun(chunk);
           return target.write(chunk, ...rest);
         };
       }

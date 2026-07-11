@@ -9,17 +9,20 @@
 // field currently has focus (e.g. a comment draft). Net effect: scrolling
 // does nothing while the app is open.
 //
-// Trade-off: mouse-tracking mode also captures ordinary clicks, so
-// click-drag text selection in the terminal needs its bypass modifier while
-// this is active (Option on Terminal.app/iTerm2, Shift on most Linux
-// terminals).
-const MOUSE_ON = "\x1b[?1000h\x1b[?1006h";
-const MOUSE_OFF = "\x1b[?1000l\x1b[?1006l";
-const SGR_MOUSE = /\x1b\[<\d+;\d+;\d+[Mm]/g;
+// Because the terminal's own click-drag selection is captured while this is on,
+// we reuse the same captured events to implement in-app selection instead (see
+// mouse-select.mjs) — the `?1002h` mode below adds motion reports (drags) on top
+// of clicks so a selection can be dragged out. Any parsed event is handed to the
+// optional `onEvent` callback; all mouse bytes are still stripped so Ink's
+// keypress parser never sees them (wheel events are thereby swallowed as before).
+import { parseMouseEvents } from "./mouse.mjs";
+
+const MOUSE_ON = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const MOUSE_OFF = "\x1b[?1000l\x1b[?1002l\x1b[?1006l";
 
 let exitHandlerInstalled = false;
 
-export function scrollLock(stdin = process.stdin, stdout = process.stdout) {
+export function scrollLock(stdin = process.stdin, stdout = process.stdout, onEvent) {
   const enable = () => {
     if (stdout.isTTY) stdout.write(MOUSE_ON);
   };
@@ -40,7 +43,10 @@ export function scrollLock(stdin = process.stdin, stdout = process.stdout) {
       if (prop === "read") {
         return (...args) => {
           const chunk = target.read(...args);
-          return typeof chunk === "string" ? chunk.replace(SGR_MOUSE, "") : chunk;
+          if (typeof chunk !== "string") return chunk;
+          const { events, cleaned } = parseMouseEvents(chunk);
+          if (onEvent) for (const ev of events) if (ev.type !== "wheel") onEvent(ev);
+          return cleaned;
         };
       }
       const value = target[prop];

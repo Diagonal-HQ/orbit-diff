@@ -4,8 +4,7 @@ import { spawnSync } from "node:child_process";
 import { render } from "ink";
 import { loadDiff, parseDiff, defaultSource } from "./src/git.mjs";
 import { App } from "./src/App.jsx";
-import { inPlaceStdout } from "./src/inplace-stdout.mjs";
-import { scrollLock } from "./src/scroll-lock.mjs";
+import { createMouseController } from "./src/mouse-select.mjs";
 import { VERSION } from "./src/version.mjs";
 
 // Everything after the script name is passed straight to `git diff`.
@@ -152,15 +151,16 @@ spawnWatchdog();
 // Mouse tracking should only be live while our own Ink view has the
 // terminal — turned off around the `claude` handoff below so its session
 // isn't fighting the same escape sequences.
-const { stdin: lockedStdin, enable: enableScrollLock, disable: disableScrollLock } = scrollLock();
+const mouse = createMouseController(process.stdout);
+const { stdin: lockedStdin, enable: enableScrollLock, disable: disableScrollLock } = mouse;
 
 let current = files;
 while (true) {
   const handoff = { doc: null };
   enableScrollLock();
   const app = render(
-    <App files={current} reloadDiff={() => parseDiff(loadDiff(args))} source={source} handoff={handoff} claudePane={claudePane} activeBg={activeBg} selectBg={selectBg} addBg={addBg} delBg={delBg} />,
-    { exitOnCtrlC: true, stdout: inPlaceStdout(process.stdout), stdin: lockedStdin },
+    <App files={current} reloadDiff={() => parseDiff(loadDiff(args))} source={source} handoff={handoff} claudePane={claudePane} activeBg={activeBg} selectBg={selectBg} addBg={addBg} delBg={delBg} mouse={mouse} />,
+    { exitOnCtrlC: true, stdout: mouse.stdout, stdin: lockedStdin },
   );
   await app.waitUntilExit();
   disableScrollLock();

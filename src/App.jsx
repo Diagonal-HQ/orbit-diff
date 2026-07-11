@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -8,7 +8,8 @@ import { Sidebar } from "./Sidebar.jsx";
 import { DiffPanel } from "./DiffPanel.jsx";
 import { AskPanel, askPanelMetrics, flattenAskRows } from "./AskPanel.jsx";
 import { useDimensions } from "./useDimensions.mjs";
-import { copyViaOSC52 } from "./clipboard.mjs";
+import { copyViaOSC52, copyEverywhere } from "./clipboard.mjs";
+import { useMouseSelection } from "./mouse-select.mjs";
 import { sendLine, paneAlive } from "./tmux.mjs";
 import { FALLBACK } from "./theme.mjs";
 import { openUrl } from "./platform.mjs";
@@ -36,7 +37,7 @@ import { fileDigest } from "./ai/cache.mjs";
 //        "reviewConfirm" (confirm kicking off an AI review) | "ask" (ask the model)
 // AI review findings are no longer a separate panel — they stream into the rail's
 // "AI Review" section (below Annotations) and navigate like everything else.
-export function App({ files: initialFiles, reloadDiff, source, handoff, claudePane = null, activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg, addBg = FALLBACK.addBg, delBg = FALLBACK.delBg }) {
+export function App({ files: initialFiles, reloadDiff, source, handoff, claudePane = null, activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg, addBg = FALLBACK.addBg, delBg = FALLBACK.delBg, mouse = null }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
@@ -70,6 +71,16 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   const [railSection, setRailSection] = useState("files"); // sidebar focus: "files" | "annotations"
   const [annSel, setAnnSel] = useState(0); // selected annotation index within the rail
   const [toast, setToast] = useState(null); // transient status message
+
+  // Mouse click-drag selection → clipboard. The controller (see mouse-select.mjs)
+  // handles the drag + highlight against the on-screen text; we just copy the
+  // extracted text and toast the result.
+  const copySelection = useCallback((text) => {
+    const err = copyEverywhere(text);
+    const n = text.split("\n").length;
+    setToast(err ? `could not copy selection: ${err.message}` : `copied ${n} line${n === 1 ? "" : "s"}`);
+  }, []);
+  useMouseSelection(mouse, copySelection);
 
   // ---- Submit target picker ----
   const [pr, setPr] = useState(null); // open PR for this branch, once detected

@@ -13,6 +13,8 @@
 //     there is no reply, so we can't confirm success. Callers should pair this
 //     with a visible fallback (e.g. writing the text to a file).
 
+import { spawnSync } from "node:child_process";
+
 // Many terminals cap the OSC 52 payload (xterm's default is ~74994 bytes of
 // base64). Past that the sequence is silently dropped, so we surface it instead
 // of emitting a truncated clipboard.
@@ -45,4 +47,39 @@ export function osc52(text, env = process.env) {
 export function copyViaOSC52(text, out = process.stdout) {
   out.write(osc52(text));
   return true;
+}
+
+// Best-effort copy to the *host* clipboard using whatever native tool exists
+// (pbcopy on macOS, wl-copy/xclip/xsel on Linux). This covers the local case
+// where the terminal ignores OSC 52 (notably macOS Terminal.app). It's a no-op
+// over SSH (the tool would touch the remote clipboard), so callers should still
+// emit OSC 52 as the primary path — this is the belt to that suspenders.
+export function copyNative(text) {
+  if (process.env.SSH_TTY || process.env.SSH_CONNECTION) return false;
+  const candidates =
+    process.platform === "darwin"
+      ? [["pbcopy", []]]
+      : [["wl-copy", []], ["xclip", ["-selection", "clipboard"]], ["xsel", ["-ib"]]];
+  for (const [cmd, args] of candidates) {
+    try {
+      const r = spawnSync(cmd, args, { input: text });
+      if (!r.error && r.status === 0) return true;
+    } catch {
+      // try the next tool
+    }
+  }
+  return false;
+}
+
+// Copy `text` everywhere we can: OSC 52 (works over SSH/tmux) plus a best-effort
+// native copy (works locally when the terminal ignores OSC 52). Returns null on
+// success or an Error if OSC 52 couldn't be emitted (e.g. payload too large).
+export function copyEverywhere(text, out = process.stdout) {
+  copyNative(text);
+  try {
+    copyViaOSC52(text, out);
+    return null;
+  } catch (err) {
+    return err;
+  }
 }
