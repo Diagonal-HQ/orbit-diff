@@ -71,6 +71,10 @@ export function PrApp({ loadPRs, loadAllPRs, loadWorktrees, loadSessions, startR
   useMouseSelection(mouse, copySelection);
   const [mode, setMode] = useState("normal"); // "normal" | "search" | "newWorktree"
   const [query, setQuery] = useState("");
+  // Debounced mirror of `query`. Typing updates `query` instantly (so the
+  // SearchBar stays responsive), but the list only re-filters once you pause,
+  // which keeps rapid keystrokes from thrashing re-renders and overview fetches.
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [newWtName, setNewWtName] = useState(""); // branch name being typed for `n`
   // Overview cache: number -> overview object (or { error }); undefined = unfetched.
   const [details, setDetails] = useState({});
@@ -158,6 +162,14 @@ export function PrApp({ loadPRs, loadAllPRs, loadWorktrees, loadSessions, startR
     return () => clearTimeout(id);
   }, [toast]);
 
+  // Debounce the search filter: settle `debouncedQuery` 200ms after typing
+  // stops. Clearing (empty query) applies immediately so Esc feels instant.
+  useEffect(() => {
+    if (!query) return setDebouncedQuery("");
+    const id = setTimeout(() => setDebouncedQuery(query), 200);
+    return () => clearTimeout(id);
+  }, [query]);
+
   const prs = prsByView[view];
   const loadError = errorByView[view];
   const loading = prs === null;
@@ -169,7 +181,7 @@ export function PrApp({ loadPRs, loadAllPRs, loadWorktrees, loadSessions, startR
   const sessionByBranch = new Map(sessions.filter((s) => s.branch).map((s) => [s.branch, s]));
   const sessionByPath = new Map(sessions.map((s) => [s.worktreePath, s]));
 
-  const list = filterPRs(loadedPrs, query);
+  const list = filterPRs(loadedPrs, debouncedQuery);
   const current = list[selected] || null;
   // Worktree selection, clamped to the live list (it can shrink on refresh).
   const wtSel = worktrees.length ? clampIdx(selectedWt, worktrees.length) : 0;
