@@ -167,6 +167,29 @@ while (true) {
   // Clear the viewer's final frame so nothing bleeds into what comes next.
   process.stdout.write("\x1b[2J\x1b[H");
 
+  // `e` in the viewer: open the highlighted file in the user's editor. Ink has
+  // released the terminal, so stdio "inherit" hands the real TTY to a terminal
+  // editor (vi/nano) and blocks until it exits; then we re-read the working tree
+  // (they may have edited the file) and re-launch the viewer on the fresh diff.
+  if (handoff.edit) {
+    const shell = process.env.SHELL || "/bin/sh";
+    const res = spawnSync(shell, ["-ic", handoff.edit.cmd], { stdio: "inherit" });
+    if (res.error) console.error(`\norbit-diff: couldn't launch editor: ${res.error.message}`);
+    let next;
+    try {
+      next = parseDiff(loadDiff(args));
+    } catch (err) {
+      console.error(`orbit-diff: reload failed: ${err.message}`);
+      process.exit(1);
+    }
+    if (next.length === 0) {
+      console.log("orbit-diff: no changes remain — nothing left to review.");
+      break;
+    }
+    current = next;
+    continue; // back into the viewer
+  }
+
   if (!handoff.doc) break; // a plain quit — we're done
 
   // Ink has released the terminal; give it to an interactive claude session.

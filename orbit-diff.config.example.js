@@ -17,6 +17,12 @@ export default {
   provider: "anthropic",
   model: "claude-opus-4-8", // any model id Pi knows for the provider above
   thinkingLevel: "medium", // off | minimal | low | medium | high | xhigh
+  // Pressing `e` on a file in the diff viewer opens it in this editor. The {file}
+  // token becomes the file's absolute path (shell-quoted) and the command runs in
+  // your login shell (aliases/functions work). Terminal editors are fine — the
+  // viewer hands over the terminal while the editor runs and reloads the diff when
+  // you exit it. Empty disables `e`.
+  editor: "", // e.g. "vi {file}"  ·  "code {file}"  ·  "$EDITOR {file}"
   review: {
     concurrency: 4, // how many files to review in parallel (1–8)
   },

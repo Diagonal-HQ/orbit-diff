@@ -26,6 +26,13 @@ export const DEFAULTS = {
   provider: "anthropic",
   model: "claude-opus-4-8",
   thinkingLevel: "medium",
+  // Command run when you press `e` on a file in the diff viewer to open it in your
+  // editor. The `{file}` token is substituted with the file's absolute path
+  // (shell-quoted); the command runs in your login shell so aliases/functions
+  // resolve. Terminal editors work — the viewer hands over the terminal while it
+  // runs and reloads the diff when you exit. Empty = `e` is disabled.
+  //   e.g. "vi {file}"  ·  "code {file}"  ·  "$EDITOR {file}"
+  editor: "",
   review: { concurrency: 4 },
   // `orbit-diff prs` PR-management. Starting a PR now creates the worktree and a
   // three-pane tmux review window itself (setup · claude · orbit-diff); these
@@ -71,6 +78,10 @@ export default {
   provider: "anthropic",
   model: "claude-opus-4-8", // any model id Pi knows for the provider above
   thinkingLevel: "medium", // off | minimal | low | medium | high | xhigh
+  // Pressing \`e\` on a file opens it in this editor. {file} = the file's absolute
+  // path (shell-quoted); runs in your login shell. Terminal editors work — the
+  // viewer hands over the terminal and reloads the diff when you exit. Empty = off.
+  editor: "", // e.g. "vi {file}"  ·  "code {file}"  ·  "$EDITOR {file}"
   review: {
     concurrency: 4, // how many files to review in parallel (1–8)
   },
@@ -151,6 +162,7 @@ export async function loadConfig() {
     pr: { ...DEFAULTS.pr, ...(fileCfg?.pr || {}) },
   };
   // Commands must be strings; coerce anything else back to the empty default.
+  merged.editor = typeof merged.editor === "string" ? merged.editor : "";
   merged.pr.start = typeof merged.pr.start === "string" ? merged.pr.start : "";
   merged.pr.setup = typeof merged.pr.setup === "string" ? merged.pr.setup : "";
   merged.pr.claude = typeof merged.pr.claude === "string" && merged.pr.claude.trim() ? merged.pr.claude : "claude";

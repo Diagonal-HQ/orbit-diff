@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Box, Text, useApp, useInput } from "ink";
-import { changeRequestPath, tildeify } from "./paths.mjs";
+import { changeRequestPath, repoRoot, tildeify } from "./paths.mjs";
+import { renderEditor } from "./pr.mjs";
+import { CONFIG_HINT } from "./ai/config.mjs";
 import { Sidebar } from "./Sidebar.jsx";
 import { DiffPanel } from "./DiffPanel.jsx";
 import { AskPanel, askPanelMetrics, flattenAskRows } from "./AskPanel.jsx";
@@ -120,6 +122,23 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
     detectPR().then((found) => {
       if (live) setPr(found);
     });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // Load the effective config up front (lightweight — no Pi SDK) so the `e`
+  // "open in editor" hotkey can read `editor` synchronously at keypress time
+  // without paying for the AI subsystem that loadAi() pulls in.
+  const configRef = useRef(null);
+  useEffect(() => {
+    let live = true;
+    import("./ai/config.mjs")
+      .then(({ loadConfig }) => loadConfig())
+      .then((cfg) => {
+        if (live) configRef.current = cfg;
+      })
+      .catch(() => {});
     return () => {
       live = false;
     };
@@ -411,6 +430,21 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       // best-effort; the prompt still reaches Claude via the handoff
     }
     if (handoff) handoff.doc = doc; // index.jsx picks this up after we exit
+    exit();
+  };
+
+  // The `e` action: open the highlighted file in the configured editor. Like the
+  // change-request handoff, this exits the viewer so the editor owns the real
+  // terminal (so `vi`/`nano` work, not just GUI editors); index.jsx runs it and
+  // reloads the diff on the way back. `{file}` in the template gets the file's
+  // absolute path, shell-quoted. No editor configured / no file selected → toast.
+  const openInEditor = () => {
+    if (!selectedFile) return setToast("no file selected");
+    const template = configRef.current?.editor;
+    const abs = resolve(repoRoot(), selectedFile.path);
+    const cmd = renderEditor(template, abs);
+    if (!cmd) return setToast(`no editor configured — set \`editor: 'vi {file}'\` in ${CONFIG_HINT}`);
+    if (handoff) handoff.edit = { cmd, file: selectedFile.path };
     exit();
   };
 
@@ -907,6 +941,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       const res = openUrl(pr.url);
       return setToast(res.ok ? `↗ opened PR #${pr.number} in browser` : `couldn't open browser: ${res.error}`);
     }
+    if (input === "e") return openInEditor();
     if (input === "r") return openSubmit();
     if (input === "R") return reloadAfterEdit(); // pick up edits Claude made in its pane
     if (input === "A") return handleAiReview();
