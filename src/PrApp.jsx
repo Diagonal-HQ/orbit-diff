@@ -40,7 +40,7 @@ const safeCall = (fn) => {
 // switch between the "Mine" tab (assigned to or awaiting review from you) and
 // "All" (every open PR in the repo) — each tab fetches its own list, cached
 // until the next `r` refresh.
-export function PrApp({ loadPRs, loadAllPRs, loadWorktrees, loadSessions, startReview, startLocal, finishReview, openUrl, openWorktree, config, mouse = null }) {
+export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null, loadWorktrees, loadSessions, startReview, startLocal, finishReview, openUrl, openWorktree, config, mouse = null }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
@@ -292,12 +292,25 @@ export function PrApp({ loadPRs, loadAllPRs, loadWorktrees, loadSessions, startR
   };
 
   // `o` on a worktree opens the matching PR in the browser (matched by branch).
+  // The loaded Mine/All tabs are scoped (open-only, and All drops drafts), so a
+  // branch's PR can genuinely exist without being in either list — when the
+  // in-memory lookup misses, fall back to asking `gh` for that branch's PR
+  // directly (finds drafts/closed/merged and PRs on the tab you're not viewing).
   const openWorktreePr = (wt) => {
     if (!wt) return;
-    const prNum = wt.branch ? prByBranch.get(wt.branch) : undefined;
+    if (!wt.branch) return setToast("no PR for this worktree");
+    const prNum = prByBranch.get(wt.branch);
     const matched = prNum ? loadedPrs.find((p) => p.number === prNum) : null;
-    if (!matched) return setToast(wt.branch ? `no open PR for ${wt.branch}` : "no PR for this worktree");
-    openInBrowser(matched);
+    if (matched) return openInBrowser(matched);
+    findPrForBranch(wt.branch).then(
+      (pr) => {
+        if (!pr) return setToast(`no PR for ${wt.branch}`);
+        const res = openUrl(pr.url);
+        if (!res.ok) return setToast(res.error);
+        setToast(`↗ opened #${pr.number} in browser`);
+      },
+      () => setToast(`no PR for ${wt.branch}`),
+    );
   };
 
   // Layout geometry (computed here so the key handler can measure the

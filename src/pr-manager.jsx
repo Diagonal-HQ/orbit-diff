@@ -11,7 +11,7 @@ import { dirname, basename } from "node:path";
 import { render } from "ink";
 import { PrApp } from "./PrApp.jsx";
 import { createMouseController } from "./mouse-select.mjs";
-import { listReviewPRs, listAllPRs, renderCommand, renderPath, shq } from "./pr.mjs";
+import { listReviewPRs, listAllPRs, findPrForBranch, renderCommand, renderPath, shq } from "./pr.mjs";
 import { listWorktrees, addWorktree, createWorktree, removeWorktree } from "./git.mjs";
 import { loadConfig, CONFIG_HINT } from "./ai/config.mjs";
 import { orbitDir, repoRoot } from "./paths.mjs";
@@ -282,6 +282,7 @@ export async function runPrManager() {
     <PrApp
       loadPRs={listReviewPRs}
       loadAllPRs={listAllPRs}
+      findPrForBranch={findPrForBranch}
       loadWorktrees={listWorktrees}
       loadSessions={listSessions}
       startReview={startReview}
