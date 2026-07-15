@@ -23,7 +23,7 @@ import {
   killWindow,
   buildReviewWindow,
 } from "./tmux.mjs";
-import { sessionKey, sessionPath, writeSession, updateSession, deleteSession, listSessions } from "./session.mjs";
+import { sessionKey, sessionPath, writeSession, updateSession, deleteSession, listSessions, sessionForWorktree } from "./session.mjs";
 import { spawnWatchdog } from "./watchdog.mjs";
 
 // Filesystem-safe slug for a branch name in a log filename.
@@ -73,29 +73,56 @@ export async function runPrManager() {
   };
 
   // Open a worktree in a tmux window: focus the existing window for this
-  // worktree if there is one, otherwise create a new one rooted at its path.
-  // Windows are tagged with the worktree path via the `@orbit_wt` window option
+  // worktree if there is one, otherwise create one rooted at its path. Windows
+  // are tagged with the worktree path via the `@orbit_wt` window option
   // (survives shell-driven automatic-rename and name collisions), so re-opening
   // a worktree jumps back to its window instead of spawning a duplicate.
-  // Requires running inside tmux. Returns { ok, focused } / { ok:false, error }.
+  //
+  // If orbit-diff originally created this worktree (a session record exists for
+  // it) but its window is gone — e.g. the tmux server was restarted since — we
+  // rebuild the full four-pane review window rather than a bare shell window, so
+  // it comes back exactly as it was first opened. Worktrees orbit-diff didn't
+  // create (no session) still just get a plain window rooted at the path.
+  //
+  // Requires running inside tmux. Returns { ok, focused, rebuilt? } /
+  // { ok:false, error }.
   const openWorktree = (wt) => {
     if (!wt || !wt.path) return { ok: false, error: "no worktree to open" };
     if (wt.bare) return { ok: false, error: "can't open a bare worktree in tmux" };
     if (!process.env.TMUX) return { ok: false, error: "not inside tmux — start tmux to open worktrees in windows" };
     try {
-      const list = spawnSync("tmux", ["list-windows", "-F", "#{window_id}\t#{@orbit_wt}"], { encoding: "utf8" });
-      if (list.status === 0 && list.stdout) {
-        for (const line of list.stdout.split("\n")) {
-          const tab = line.indexOf("\t");
-          if (tab < 0) continue;
-          if (line.slice(tab + 1) === wt.path) {
-            spawnSync("tmux", ["select-window", "-t", line.slice(0, tab)]);
-            return { ok: true, focused: true };
-          }
-        }
+      // Already open? Focus it instead of duplicating.
+      const existing = findWindowByWorktree(wt.path);
+      if (existing) {
+        focusWindow(existing);
+        return { ok: true, focused: true };
       }
-      // -P -F prints the new window's id; new-window also selects it (so the
-      // user lands in the new window). Tag it so a later open re-focuses it.
+
+      // Orbit-diff created this one but its window is gone: rebuild the full
+      // review window (status · setup · claude · diff), reusing what the session
+      // already knows so the setup/claude commands render the same as before.
+      const prior = sessionForWorktree(wt.path);
+      if (prior) {
+        const target = {
+          headRefName: wt.branch || prior.branch || "",
+          baseRefName: prior.base,
+          number: prior.pr,
+          repo: prior.repo,
+          url: prior.url,
+          title: prior.title || wt.branch || basename(wt.path),
+        };
+        const res = openReviewWindow(prior.key || sessionKey(wt.path), wt.path, target);
+        if (!res.ok) return res;
+        // openReviewWindow builds the window detached; jump to it so `enter`
+        // lands the user in the rebuilt window as it did before.
+        const rebuilt = findWindowByWorktree(wt.path);
+        if (rebuilt) focusWindow(rebuilt);
+        return { ok: true, focused: false, rebuilt: true };
+      }
+
+      // A worktree orbit-diff didn't create: just open a plain window at its
+      // path. -P -F prints the new window's id; new-window also selects it (so
+      // the user lands in it). Tag it so a later open re-focuses it.
       const created = spawnSync(
         "tmux",
         ["new-window", "-P", "-F", "#{window_id}", "-n", windowName(wt), "-c", wt.path],
