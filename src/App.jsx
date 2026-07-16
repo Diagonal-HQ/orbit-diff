@@ -8,6 +8,7 @@ import { renderEditor } from "./pr.mjs";
 import { CONFIG_HINT } from "./ai/config.mjs";
 import { Sidebar } from "./Sidebar.jsx";
 import { DiffPanel } from "./DiffPanel.jsx";
+import { followScrollWrapped, scrollToShow, pageMove } from "./wrap.mjs";
 import { AskPanel, askPanelMetrics, flattenAskRows } from "./AskPanel.jsx";
 import { useDimensions } from "./useDimensions.mjs";
 import { copyViaOSC52, copyEverywhere } from "./clipboard.mjs";
@@ -58,6 +59,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   const [sideW, setSideW] = useState(null); // null = responsive default
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [diffSplit, setDiffSplit] = useState(false); // d toggles side-by-side vs inline
+  const [wrapLines, setWrapLines] = useState(false); // w toggles soft-wrapping (inline only)
 
   // ---- Annotations (persisted per repo/branch; restored on launch) ----
   // Hydrate from disk, keeping only notes whose file is unchanged since they were
@@ -257,6 +259,10 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   const inner = Math.max(1, bodyH - 3); // visible diff rows (border + title)
   const page = Math.max(1, inner - 2);
   const total = selectedFile ? selectedFile.lines.length : 0;
+  // Diff geometry shared with DiffPanel; only needed for the wrap-aware scroll
+  // math, which measures line heights at this width.
+  const numW = String(Math.max(1, total)).length;
+  const rowW = Math.max(1, diffW - 4);
 
   const selectFile = (i) => {
     const next = clamp(i, 0, Math.max(0, filtered.length - 1));
@@ -272,7 +278,11 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
     if (total === 0) return;
     const next = clamp(nextRaw, 0, total - 1);
     setCursor(next);
-    setScroll((s) => followScroll(s, next, inner, total));
+    setScroll((s) =>
+      wrapLines && selectedFile
+        ? followScrollWrapped(s, next, inner, selectedFile.lines, rowW, numW)
+        : followScroll(s, next, inner, total),
+    );
   };
 
   const jumpToMatch = (i) => {
@@ -280,10 +290,15 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
     const wrapped = (i + matches.length) % matches.length;
     setMatchIdx(wrapped);
     const m = matches[wrapped];
-    const t = filtered[m.fi] ? filtered[m.fi].lines.length : 0;
+    const f = filtered[m.fi];
+    const t = f ? f.lines.length : 0;
     setSelected(m.fi);
     setCursor(m.li);
-    setScroll(clamp(m.li - Math.floor(inner / 2), 0, Math.max(0, t - inner)));
+    setScroll(
+      wrapLines && f
+        ? scrollToShow(f.lines, m.li, inner, rowW, String(Math.max(1, t)).length)
+        : clamp(m.li - Math.floor(inner / 2), 0, Math.max(0, t - inner)),
+    );
     setFocus("diff");
   };
 
@@ -949,6 +964,20 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       setDiffSplit(next);
       return setToast(next ? "side-by-side view" : "inline view");
     }
+    // Toggle soft-wrapping of long diff lines (inline view only; split stays
+    // truncated). Re-nudge the viewport so the cursor stays put under the new
+    // line-height model.
+    if (input === "w" && !key.ctrl) {
+      const next = !wrapLines;
+      setWrapLines(next);
+      if (selectedFile)
+        setScroll((s) =>
+          next
+            ? followScrollWrapped(s, cursor, inner, selectedFile.lines, rowW, numW)
+            : followScroll(s, cursor, inner, total),
+        );
+      return setToast(next ? (diffSplit ? "line wrap on (inline view)" : "line wrap on") : "line wrap off");
+    }
     if (input === "r") return openSubmit();
     if (input === "R") return reloadAfterEdit(); // pick up edits Claude made in its pane
     if (input === "A") return handleAiReview();
@@ -956,8 +985,10 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
 
     // Diff paging works from either pane, so you can skim a file's diff while
     // keeping the file rail focused for quick file switches.
-    if (key.pageUp || (key.ctrl && input === "u")) return moveCursor(cursor - page);
-    if (key.pageDown || (key.ctrl && input === "d")) return moveCursor(cursor + page);
+    if (key.pageUp || (key.ctrl && input === "u"))
+      return moveCursor(wrapLines && selectedFile ? pageMove(selectedFile.lines, cursor, inner, rowW, numW, -1) : cursor - page);
+    if (key.pageDown || (key.ctrl && input === "d"))
+      return moveCursor(wrapLines && selectedFile ? pageMove(selectedFile.lines, cursor, inner, rowW, numW, +1) : cursor + page);
     if (input === "g") return moveCursor(0);
     if (input === "G") return moveCursor(total - 1);
 
@@ -1091,6 +1122,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
           addBg={addBg}
           delBg={delBg}
           split={diffSplit}
+          wrap={wrapLines}
         />
       </Box>
       <StatusBar
@@ -1179,6 +1211,7 @@ function StatusBar({
       <Text color="cyan">/</Text><Dim> files · </Dim>
       <Text color="magenta">f</Text><Dim> find · </Dim>
       <Text color="green">d</Text><Dim> split · </Dim>
+      <Text color="green">w</Text><Dim> wrap · </Dim>
       <Text color="green">R</Text><Dim> refresh · q quit{sel}{nav} · {source}</Dim>
     </Bar>
   );

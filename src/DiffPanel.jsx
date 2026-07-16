@@ -1,6 +1,8 @@
 import React from "react";
 import { Box, Text } from "ink";
+import stringWidth from "string-width";
 import { highlightLine } from "./highlight.mjs";
+import { wrapRows, lineRows, maxScroll, contentWidth as lineContentW, prefixWidth } from "./wrap.mjs";
 
 const LINE_STYLE = {
   add: { sign: "+", color: "green", bg: undefined },
@@ -22,9 +24,8 @@ const pad = (used, width) => " ".repeat(Math.max(0, width - used));
 // theme.mjs). A parent Text's background shows through its child fg colors (fg
 // resets don't clear it), so the whole line — syntax-highlighted content and
 // all — sits on the band, filled to the edge by a trailing pad.
-export function DiffPanel({ file, scroll, cursor, focused, width, height, query, matchLines, currentLine, annotatedLines, selectionRange, activeBg, selectBg, addBg, delBg, split }) {
+export function DiffPanel({ file, scroll, cursor, focused, width, height, query, matchLines, currentLine, annotatedLines, selectionRange, activeBg, selectBg, addBg, delBg, split, wrap }) {
   const inner = Math.max(1, height - 3); // border (2) + title (1)
-  const contentWidth = width - 2; // borders
 
   if (!file) {
     return (
@@ -35,12 +36,25 @@ export function DiffPanel({ file, scroll, cursor, focused, width, height, query,
   }
 
   const total = file.lines.length;
-  const start = Math.max(0, Math.min(scroll, Math.max(0, total - inner)));
-  const visible = file.lines.slice(start, start + inner);
   const numW = String(Math.max(1, total)).length;
   const rowW = Math.max(1, width - 4); // content width inside border + padding
   // Split view: marker (1) + two equal columns + a 1-char divider between them.
   const colW = Math.max(4, Math.floor((rowW - 2) / 2));
+
+  // Wrapping only applies to the unified view (two-column wrapping is a separate
+  // problem). With it on, one line can span several rows so the viewport becomes
+  // variable-height — see renderWrapped and wrap.mjs.
+  const wrapOn = wrap && !split;
+  if (wrapOn) {
+    return renderWrapped({
+      file, scroll, cursor, focused, width, height, inner, total, numW, rowW,
+      query, matchLines, currentLine, annotatedLines, selectionRange,
+      activeBg, selectBg, addBg, delBg,
+    });
+  }
+
+  const start = Math.max(0, Math.min(scroll, Math.max(0, total - inner)));
+  const visible = file.lines.slice(start, start + inner);
 
   const title = `${file.name}  (${start + 1}-${Math.min(start + inner, total)}/${total})${split ? "  ⇆" : ""}`;
 
@@ -126,6 +140,98 @@ export function DiffPanel({ file, scroll, cursor, focused, width, height, query,
           </Text>
         );
       })}
+    </Panel>
+  );
+}
+
+// Unified diff with soft-wrapping. `scroll` is still the top *logical* line — we
+// scroll by whole lines — and from there we emit each line's wrapped rows until
+// the row budget (`inner`) is spent, capping the last line so the panel never
+// draws past its fixed height. A line's ▸ marker, gutter and sign sit on its
+// first row; continuation rows blank that prefix so wrapped text stays aligned
+// under the content column, and one background band spans all of a line's rows.
+function renderWrapped({ file, scroll, cursor, focused, width, height, inner, total, numW, rowW, query, matchLines, currentLine, annotatedLines, selectionRange, activeBg, selectBg, addBg, delBg }) {
+  const start = Math.max(0, Math.min(scroll, maxScroll(file.lines, inner, rowW, numW)));
+  const contentW = lineContentW(rowW, numW);
+  const preW = prefixWidth(numW);
+  const gutterW = 2 * numW + 1;
+
+  const out = [];
+  let used = 0;
+  let last = start;
+  for (let idx = start; idx < total && used < inner; idx++) {
+    const l = file.lines[idx];
+    last = idx;
+    const onCursor = idx === cursor;
+    const inSel = selectionRange && idx >= selectionRange.lo && idx <= selectionRange.hi;
+    const annotated = annotatedLines && annotatedLines.has(idx);
+    const typeBg = l.type === "add" ? addBg : l.type === "del" ? delBg : undefined;
+    const bg = onCursor ? activeBg : inSel ? selectBg : typeBg;
+    const fill = bg !== undefined;
+    const marker = onCursor ? "▸" : annotated ? "●" : " ";
+    const markerColor = annotated ? "green" : "cyan";
+    const st = LINE_STYLE[l.type] || LINE_STYLE.context;
+    const isMatch = matchLines && matchLines.has(idx);
+    const isCurrent = idx === currentLine;
+
+    // Wrap this line's rendered text into visual rows. Highlighted content wraps
+    // as an ANSI string (colors carry across the break); a match line wraps its
+    // plain body so we can re-mark the query per row. Cap to the remaining
+    // budget so a very tall line can't overflow the panel.
+    const isHunk = l.type === "hunk";
+    const hl = isHunk || isMatch ? null : highlightLine(l, file.lang);
+    const body = l.content.length > 0 ? l.content : " ";
+    let rows = isHunk
+      ? wrapRows(l.content, Math.max(1, rowW - 1))
+      : wrapRows(hl != null ? hl : body, contentW);
+    const room = inner - used;
+    if (rows.length > room) rows = rows.slice(0, room);
+    used += rows.length;
+
+    rows.forEach((rowStr, r) => {
+      const first = r === 0;
+      if (isHunk) {
+        out.push(
+          <Text key={`${idx}-${r}`} wrap="truncate" backgroundColor={bg}>
+            <Text color={markerColor} bold>{first ? marker : " "}</Text>
+            <Text color="cyan">{rowStr}</Text>
+            {fill && <Text>{pad(1 + stringWidth(rowStr), rowW)}</Text>}
+          </Text>,
+        );
+        return;
+      }
+      const gutter = first
+        ? `${l.oldNum ?? ""}`.padStart(numW) + " " + `${l.newNum ?? ""}`.padStart(numW)
+        : " ".repeat(gutterW);
+      out.push(
+        <Text key={`${idx}-${r}`} wrap="truncate" backgroundColor={bg}>
+          <Text color={markerColor} bold>{first ? marker : " "}</Text>
+          <Text dimColor={!onCursor} color={onCursor ? "cyan" : undefined}>{gutter} </Text>
+          <Text color={st.color}>{first ? st.sign : " "}</Text>
+          {isMatch ? (
+            splitMatches(rowStr, query).map((seg, k) =>
+              seg.hit ? (
+                <Text key={k} backgroundColor={isCurrent ? "cyan" : "yellow"} color="black">{seg.text}</Text>
+              ) : (
+                <Text key={k} color={st.color}>{seg.text}</Text>
+              ),
+            )
+          ) : hl != null ? (
+            <Text>{rowStr}</Text>
+          ) : (
+            <Text color={st.color}>{rowStr}</Text>
+          )}
+          {fill && <Text>{pad(preW + stringWidth(rowStr), rowW)}</Text>}
+        </Text>,
+      );
+    });
+  }
+
+  const shown = last - start + 1;
+  const title = `${file.name}  (${start + 1}-${Math.min(start + shown, total)}/${total})  ↩`;
+  return (
+    <Panel focused={focused} width={width} height={height} title={title}>
+      {out}
     </Panel>
   );
 }
