@@ -57,6 +57,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   const [matchIdx, setMatchIdx] = useState(0);
   const [sideW, setSideW] = useState(null); // null = responsive default
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [diffSplit, setDiffSplit] = useState(false); // d toggles side-by-side vs inline
 
   // ---- Annotations (persisted per repo/branch; restored on launch) ----
   // Hydrate from disk, keeping only notes whose file is unchanged since they were
@@ -239,7 +240,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   // Sidebar width: a responsive default until the user adjusts it with [ / ],
   // then their value, always clamped so the diff keeps room even on resize.
   const sideMax = Math.max(20, cols - 24);
-  const sidebarW = sidebarOpen ? clamp(sideW ?? Math.floor(cols * 0.32), 16, sideMax) : 0;
+  const sidebarW = sidebarOpen ? clamp(sideW ?? Math.floor(cols * 0.256), 16, sideMax) : 0;
   // While typing a note, an editor takes over the left column so the diff on the
   // right stays visible. It reuses the rail's width when the rail is open (no
   // layout jump), else opens at a comfortable default with room to type.
@@ -942,6 +943,12 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       return setToast(res.ok ? `↗ opened PR #${pr.number} in browser` : `couldn't open browser: ${res.error}`);
     }
     if (input === "e") return openInEditor();
+    // Toggle side-by-side vs inline diff (plain `d`; ctrl-d pages the diff below).
+    if (input === "d" && !key.ctrl) {
+      const next = !diffSplit;
+      setDiffSplit(next);
+      return setToast(next ? "side-by-side view" : "inline view");
+    }
     if (input === "r") return openSubmit();
     if (input === "R") return reloadAfterEdit(); // pick up edits Claude made in its pane
     if (input === "A") return handleAiReview();
@@ -1083,6 +1090,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
           selectBg={selectBg}
           addBg={addBg}
           delBg={delBg}
+          split={diffSplit}
         />
       </Box>
       <StatusBar
@@ -1170,6 +1178,7 @@ function StatusBar({
       <Text color="blueBright">?</Text><Dim> ask · </Dim>
       <Text color="cyan">/</Text><Dim> files · </Dim>
       <Text color="magenta">f</Text><Dim> find · </Dim>
+      <Text color="green">d</Text><Dim> split · </Dim>
       <Text color="green">R</Text><Dim> refresh · q quit{sel}{nav} · {source}</Dim>
     </Bar>
   );
