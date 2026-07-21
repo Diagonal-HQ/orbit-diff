@@ -43,6 +43,7 @@ export function addWorktree(path, branch) {
   // Best-effort fetch so origin's refs (the PR branch, and anything else) are
   // current before we look them up (ignore failure — offline/no-remote is fine).
   git(["fetch", "origin"]);
+  updateDefaultBranch();
   const local = git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).status === 0;
   const res = local
     ? git(["worktree", "add", path, branch])
@@ -64,12 +65,36 @@ export function createWorktree(path, branch, base) {
   // Best-effort fetch so origin's refs are current before branching off (ignore
   // failure — offline/no-remote is fine).
   git(["fetch", "origin"]);
+  updateDefaultBranch();
   const ref = base || originDefaultBranch();
   const res = git(["worktree", "add", "-b", branch, path, ref]);
   if (res.status !== 0) {
     return { ok: false, error: (res.stderr || "git worktree add failed").trim() };
   }
   return { ok: true, path };
+}
+
+// Fast-forward the local default branch (e.g. "main") to match origin, so it —
+// and any new worktree branched off it — starts from the latest remote state.
+// Assumes origin's refs were just fetched. Best-effort and non-destructive:
+// only ever fast-forwards, so a diverged or dirty local branch is left untouched
+// rather than rewound or clobbered (failure is ignored — offline is fine).
+function updateDefaultBranch() {
+  const remoteRef = originDefaultBranch(); // e.g. "origin/main"
+  if (remoteRef === "HEAD") return; // no origin/HEAD to sync from
+  const branch = remoteRef.replace(/^origin\//, "");
+
+  // git won't update a checked-out branch's ref, so if the default branch is
+  // checked out (normally the main working tree) fast-forward it in place;
+  // --ff-only aborts rather than clobbering a dirty or diverged tree. When it's
+  // not checked out anywhere, update the local ref straight from the already-
+  // fetched remote-tracking ref (fetch refuses a non-fast-forward here too).
+  const wt = listWorktrees().find((w) => w.branch === branch);
+  if (wt) {
+    git(["-C", wt.path, "merge", "--ff-only", remoteRef]);
+  } else {
+    git(["fetch", ".", `refs/remotes/${remoteRef}:refs/heads/${branch}`]);
+  }
 }
 
 // Origin's default branch as a remote-tracking ref (e.g. "origin/main"),
