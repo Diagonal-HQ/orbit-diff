@@ -28,9 +28,10 @@ export const DEFAULTS = {
   thinkingLevel: "medium",
   // Command run when you press `e` on a file in the diff viewer to open it in your
   // editor. The `{file}` token is substituted with the file's absolute path
-  // (shell-quoted); the command runs in your login shell so aliases/functions
-  // resolve. Terminal editors work — the viewer hands over the terminal while it
-  // runs and reloads the diff when you exit. Empty = `e` is disabled.
+  // (shell-quoted); the command runs via your shell non-interactively (env vars
+  // like $EDITOR resolve; rc-file aliases don't). Terminal editors work — the
+  // viewer hands over the terminal while it runs and reloads the diff when you
+  // exit. Empty = `e` is disabled.
   //   e.g. "vi {file}"  ·  "code {file}"  ·  "$EDITOR {file}"
   editor: "",
   review: { concurrency: 4 },
@@ -79,8 +80,9 @@ export default {
   model: "claude-opus-4-8", // any model id Pi knows for the provider above
   thinkingLevel: "medium", // off | minimal | low | medium | high | xhigh
   // Pressing \`e\` on a file opens it in this editor. {file} = the file's absolute
-  // path (shell-quoted); runs in your login shell. Terminal editors work — the
-  // viewer hands over the terminal and reloads the diff when you exit. Empty = off.
+  // path (shell-quoted); runs via your shell ($EDITOR etc. resolve). Terminal
+  // editors work — the viewer hands over the terminal and reloads the diff when
+  // you exit. Empty = off.
   editor: "", // e.g. "vi {file}"  ·  "code {file}"  ·  "$EDITOR {file}"
   review: {
     concurrency: 4, // how many files to review in parallel (1–8)

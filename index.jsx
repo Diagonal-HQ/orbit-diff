@@ -171,9 +171,13 @@ while (true) {
   // released the terminal, so stdio "inherit" hands the real TTY to a terminal
   // editor (vi/nano) and blocks until it exits; then we re-read the working tree
   // (they may have edited the file) and re-launch the viewer on the fresh diff.
+  // The shell must NOT be interactive (`-i`): an interactive shell enables job
+  // control, moves the TTY's foreground process group to itself, and leaves it
+  // pointing at a dead group on exit — the relaunched viewer then dies with
+  // `setRawMode failed with errno: 5` instead of coming back.
   if (handoff.edit) {
     const shell = process.env.SHELL || "/bin/sh";
-    const res = spawnSync(shell, ["-ic", handoff.edit.cmd], { stdio: "inherit" });
+    const res = spawnSync(shell, ["-c", handoff.edit.cmd], { stdio: "inherit" });
     if (res.error) console.error(`\norbit-diff: couldn't launch editor: ${res.error.message}`);
     let next;
     try {
