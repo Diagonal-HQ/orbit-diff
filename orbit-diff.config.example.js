@@ -50,8 +50,10 @@ export default {
     claude: "claude", // command run in the top-right pane
     done: "", // e.g. "tear-down {branch}" — YOUR env teardown (destroy the instance,
     //            etc.); orbit-diff always removes the git worktree itself afterwards
-    worktreeDir: "", // where worktrees go; tokens {repo}{branch}{base}{number}, `~`
-    //                  expands. Empty = sibling "<repo>-worktrees/<branch>".
+    worktreeDir: "", // where worktrees go (both PR reviews and `n` local worktrees);
+    //                  tokens {repo}{branch}{base}{number}, `~` expands. Local
+    //                  worktrees leave {repo}/{base}/{number} empty. Empty setting =
+    //                  sibling "<repo>-worktrees/<branch>".
     worktreeRefreshMinutes: 2, // auto-refresh the worktrees pane (0 disables)
   },
 };

@@ -139,8 +139,12 @@ export async function runPrManager() {
     }
   };
 
-  // Where a PR's worktree goes: the configured `pr.worktreeDir` template, else a
+  // Where a worktree goes: the configured `pr.worktreeDir` template, else a
   // sibling directory `<repo>-worktrees/<branch>` next to the main checkout.
+  // Shared by PR reviews (startReview) and ad-hoc local worktrees (startLocal),
+  // so both honour the same `pr.worktreeDir` setting. `pr` is a pr-like object;
+  // local worktrees supply only `headRefName`, leaving `{base}`/`{number}`/
+  // `{repo}` to render empty in a template.
   const worktreePathFor = (pr) => {
     const tmpl = config.pr.worktreeDir;
     if (tmpl && tmpl.trim()) return renderPath(tmpl, pr);
@@ -198,8 +202,7 @@ export async function runPrManager() {
     if (!branch) return { ok: false, error: "no name given" };
     if (!inTmux()) return { ok: false, error: "not inside tmux — start tmux to open a review window" };
 
-    const root = repoRoot();
-    const wtPath = `${dirname(root)}/${basename(root)}-worktrees/${slug(branch)}`;
+    const wtPath = worktreePathFor({ headRefName: branch });
 
     const existing = findWindowByWorktree(wtPath);
     if (existing) {
