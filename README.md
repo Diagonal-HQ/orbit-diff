@@ -148,6 +148,7 @@ stream in when `gh` answers.
 | `o` | open the PR (or the worktree's PR) in the browser |
 | `d` | **finish** — tear the review down, if this PR has one (see below) |
 | `n` | **new local worktree** — prompt for a branch name and open it the same way as a PR, with no PR behind it |
+| `b` | **check out a branch** — prompt for an existing branch (origin's or local) and open just a worktree + plain tmux window, no setup script |
 | `Tab` | switch focus between the PR list and the worktrees pane |
 | `Enter` (worktrees) | jump to that worktree's tmux window |
 | `/` | filter the list (fuzzy match on number / title / branch) |
@@ -160,6 +161,13 @@ its own worktree, and opens the exact same four-pane review window a PR gets
 (status · setup · claude · orbit-diff). It shows up in the worktrees pane like
 any other, so `Enter` refocuses it and `d` tears it down when you're done —
 it's just not tagged with a PR number since there isn't one.
+
+Press `b` when you only want the code. Type an existing branch name (a leading
+`origin/` is fine) and `Enter` fetches it, checks it out in a worktree, and
+drops you in a plain tmux window there — that's all. No `pr.setup`, no review
+panes, no session record, so nothing is provisioned and there's nothing to
+report back. It still lands in the worktrees pane, where `Enter` refocuses its
+window and `d` cleans it up like any other worktree.
 
 ### The review flow
 

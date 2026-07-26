@@ -121,23 +121,33 @@ export async function runPrManager() {
       }
 
       // A worktree orbit-diff didn't create: just open a plain window at its
-      // path. -P -F prints the new window's id; new-window also selects it (so
-      // the user lands in it). Tag it so a later open re-focuses it.
-      const created = spawnSync(
-        "tmux",
-        ["new-window", "-P", "-F", "#{window_id}", "-n", windowName(wt), "-c", wt.path],
-        { encoding: "utf8" },
-      );
-      if (created.status !== 0) {
-        return { ok: false, error: (created.stderr || "").trim() || "tmux new-window failed" };
-      }
-      const id = created.stdout.trim();
-      if (id) spawnSync("tmux", ["set-option", "-w", "-t", id, "@orbit_wt", wt.path]);
+      // path.
+      const plain = openPlainWindow(wt.path, windowName(wt));
+      if (!plain.ok) return plain;
       return { ok: true, focused: false };
     } catch (err) {
       return { ok: false, error: err.message };
     }
   };
+
+  // Open a bare, single-pane tmux window rooted at `path` — no review panes and
+  // nothing run in it. -P -F prints the new window's id; new-window also selects
+  // it (so the user lands in it). Tag it with `@orbit_wt` so a later open
+  // re-focuses this window instead of spawning a duplicate.
+  // Returns { ok } / { ok:false, error }.
+  function openPlainWindow(path, name) {
+    const created = spawnSync(
+      "tmux",
+      ["new-window", "-P", "-F", "#{window_id}", "-n", name, "-c", path],
+      { encoding: "utf8" },
+    );
+    if (created.status !== 0) {
+      return { ok: false, error: (created.stderr || "").trim() || "tmux new-window failed" };
+    }
+    const id = created.stdout.trim();
+    if (id) spawnSync("tmux", ["set-option", "-w", "-t", id, "@orbit_wt", path]);
+    return { ok: true };
+  }
 
   // Where a worktree goes: the configured `pr.worktreeDir` template, else a
   // sibling directory `<repo>-worktrees/<branch>` next to the main checkout.
@@ -226,6 +236,44 @@ export async function runPrManager() {
     });
 
     return openReviewWindow(key, wtPath, { headRefName: branch, title: branch });
+  };
+
+  // Check out an *existing* branch — one on origin, or already local — in a
+  // worktree and drop into a plain tmux window there. Deliberately the bare
+  // minimum: no session record, no `pr.setup`, no review panes. For grabbing
+  // someone's branch to poke at when provisioning a whole review environment
+  // would be overkill. Leaving no session behind also means a later `enter` on
+  // this worktree reopens it the same plain way, not as a review window.
+  // Returns { ok, branch, path, focused?, created? } or { ok:false, error } —
+  // `branch` is the name after normalizing, so callers report what was actually
+  // checked out rather than what was typed.
+  const checkoutBranch = (name) => {
+    const branch = name.trim().replace(/^origin\//, "");
+    if (!branch) return { ok: false, error: "no branch given" };
+    if (!inTmux()) return { ok: false, error: "not inside tmux — start tmux to open a worktree window" };
+
+    const wtPath = worktreePathFor({ headRefName: branch });
+
+    // Already open for this worktree? Focus it instead of duplicating.
+    const existing = findWindowByWorktree(wtPath);
+    if (existing) {
+      focusWindow(existing);
+      return { ok: true, branch, focused: true, path: wtPath };
+    }
+
+    // addWorktree checks out the branch if it's already local, otherwise fetches
+    // and creates it tracking origin/<branch>. An existing directory is reused
+    // as-is (it's already checked out to something).
+    let created = false;
+    if (!existsSync(wtPath)) {
+      const add = addWorktree(wtPath, branch);
+      if (!add.ok) return { ok: false, error: add.error };
+      created = true;
+    }
+
+    const opened = openPlainWindow(wtPath, branch);
+    if (!opened.ok) return opened;
+    return { ok: true, branch, path: wtPath, created };
   };
 
   // Shared tail for startReview/startLocal: render the setup/claude commands,
@@ -317,6 +365,7 @@ export async function runPrManager() {
       loadSessions={listSessions}
       startReview={startReview}
       startLocal={startLocal}
+      checkoutBranch={checkoutBranch}
       finishReview={finishReview}
       openUrl={openUrl}
       openWorktree={openWorktree}

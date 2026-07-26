@@ -36,11 +36,14 @@ const safeCall = (fn) => {
 // `enter` jumps to a worktree's tmux window, `o` opens its PR, and `d` also
 // tears it down), `n` opens a prompt for a branch name and hands it to
 // `startLocal` — the same worktree + review window as a PR, but on a brand-new
-// local branch with no PR behind it — `/` filters the list, and `left`/`right`
+// local branch with no PR behind it — `b` prompts for an *existing* branch
+// (usually one on origin) and hands it to `checkoutBranch`, which only checks it
+// out in a worktree and opens a plain tmux window — no setup script, no review
+// panes — `/` filters the list, and `left`/`right`
 // switch between the "Mine" tab (assigned to or awaiting review from you) and
 // "All" (every open PR in the repo) — each tab fetches its own list, cached
 // until the next `r` refresh.
-export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null, loadWorktrees, loadSessions, startReview, startLocal, finishReview, openUrl, openWorktree, config, mouse = null }) {
+export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null, loadWorktrees, loadSessions, startReview, startLocal, checkoutBranch, finishReview, openUrl, openWorktree, config, mouse = null }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
@@ -69,13 +72,13 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
     setToast(err ? `could not copy selection: ${err.message}` : `copied ${n} line${n === 1 ? "" : "s"}`);
   }, []);
   useMouseSelection(mouse, copySelection);
-  const [mode, setMode] = useState("normal"); // "normal" | "search" | "newWorktree"
+  const [mode, setMode] = useState("normal"); // "normal" | "search" | "newWorktree" | "checkoutBranch"
   const [query, setQuery] = useState("");
   // Debounced mirror of `query`. Typing updates `query` instantly (so the
   // SearchBar stays responsive), but the list only re-filters once you pause,
   // which keeps rapid keystrokes from thrashing re-renders and overview fetches.
   const [debouncedQuery, setDebouncedQuery] = useState("");
-  const [newWtName, setNewWtName] = useState(""); // branch name being typed for `n`
+  const [newWtName, setNewWtName] = useState(""); // branch name being typed for `n` / `b`
   // Overview cache: number -> overview object (or { error }); undefined = unfetched.
   const [details, setDetails] = useState({});
   // Numbers we've already kicked off a fetch for. A ref (not `details`) so it
@@ -249,6 +252,22 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
     );
   };
 
+  // `b`'s prompt: check out an existing branch (origin's or a local one) in a
+  // worktree and open a plain tmux window there — no setup script, no review
+  // panes, nothing else run.
+  const checkoutBranchWt = (name) => {
+    const res = checkoutBranch(name);
+    if (!res.ok) return setToast(res.error);
+    refreshLocal();
+    const label = res.branch || name; // what was actually checked out (`origin/` stripped)
+    if (res.focused) return setToast(`⧉ focused ${label}`);
+    setToast(
+      res.created
+        ? `⧉ ${label}: worktree checked out · opened in a tmux window`
+        : `⧉ ${label}: opened existing worktree in a tmux window`,
+    );
+  };
+
   // `o` on a PR opens it in the system's default browser.
   const openInBrowser = (pr) => {
     if (!pr) return;
@@ -347,17 +366,19 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
       return;
     }
 
-    // ---- New local worktree: capture the branch name to hand to startLocal ----
-    if (mode === "newWorktree") {
+    // ---- Branch prompt: capture a branch name for `n` (new local branch +
+    // review window) or `b` (check out an existing branch, plain window) ----
+    if (mode === "newWorktree" || mode === "checkoutBranch") {
       if (key.escape) {
         setNewWtName("");
         return setMode("normal");
       }
       if (key.return) {
         const name = newWtName.trim();
+        const submit = mode === "newWorktree" ? startLocalWt : checkoutBranchWt;
         setMode("normal");
         setNewWtName("");
-        if (name) startLocalWt(name);
+        if (name) submit(name);
         return;
       }
       if (key.backspace || key.delete) return setNewWtName((s) => s.slice(0, -1));
@@ -379,6 +400,11 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
       setToast(null);
       setNewWtName("");
       return setMode("newWorktree");
+    }
+    if (input === "b") {
+      setToast(null);
+      setNewWtName("");
+      return setMode("checkoutBranch");
     }
     if (input === "r") {
       setToast(null);
@@ -492,7 +518,9 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
       {mode === "search" ? (
         <SearchBar query={query} count={list.length} />
       ) : mode === "newWorktree" ? (
-        <NewWorktreeBar name={newWtName} />
+        <NewWorktreeBar name={newWtName} label="new worktree" action="create" />
+      ) : mode === "checkoutBranch" ? (
+        <NewWorktreeBar name={newWtName} label="checkout branch" action="checkout" />
       ) : (
         <StatusBar focus={paneFocus} setupCmd={setupCmd} inTmux={!!process.env.TMUX} />
       )}
@@ -855,16 +883,18 @@ function SearchBar({ query, count }) {
   );
 }
 
-function NewWorktreeBar({ name }) {
+// The branch prompt, shared by `n` (new branch + review window) and `b` (check
+// out an existing branch into a plain window) — same input, different verb.
+function NewWorktreeBar({ name, label = "new worktree", action = "create" }) {
   return (
     <Box height={1}>
       <Text wrap="truncate">
         {" "}
-        <Text color="green">new worktree</Text>
+        <Text color="green">{label}</Text>
         <Text dimColor>  branch </Text>
         {name}
         <Text inverse> </Text>
-        <Text dimColor>  enter create · esc cancel</Text>
+        <Text dimColor>  enter {action} · esc cancel</Text>
       </Text>
     </Box>
   );
@@ -888,7 +918,7 @@ function StatusBar({ focus, setupCmd, inTmux }) {
     <Box height={1}>
       <Text wrap="truncate">
         {" "}
-        <Text dimColor>↑↓/jk</Text> move  <Text dimColor>←→</Text> tab  <Text bold>tab</Text> pane  {actions}  <Text bold>n</Text> new  <Text bold>/</Text> search  <Text bold>r</Text> refresh  <Text bold>q</Text> quit
+        <Text dimColor>↑↓/jk</Text> move  <Text dimColor>←→</Text> tab  <Text bold>tab</Text> pane  {actions}  <Text bold>n</Text> new  <Text bold>b</Text> branch  <Text bold>/</Text> search  <Text bold>r</Text> refresh  <Text bold>q</Text> quit
         {focus !== "worktrees" && setupCmd ? <Text dimColor>   ⚙ {setupCmd}</Text> : null}
       </Text>
     </Box>
