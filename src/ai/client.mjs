@@ -123,6 +123,13 @@ async function makeSession(config, { systemPrompt, tools }) {
 // tree-mutating tool (edit/write/bash) runs, so callers can reload afterwards.
 async function runPrompt(session, promptText, onDelta, onMutate) {
   let text = "";
+  // A failed turn (dead credential, provider outage) is reported as a field on the
+  // final assistant message — `prompt()` still resolves normally — so without this
+  // the caller would just get an empty answer and show nothing. Track the last
+  // assistant message's stop reason (a retried turn emits its own message_end, so
+  // the last one is the real outcome) and raise it once the turn settles. Thrown
+  // as a plain Error so asAiError() can map it to a friendlier message.
+  let failure = null;
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
       const delta = event.assistantMessageEvent.delta;
@@ -130,6 +137,8 @@ async function runPrompt(session, promptText, onDelta, onMutate) {
       if (onDelta) onDelta(delta);
     } else if (event.type === "tool_execution_start" && MUTATING_TOOLS.has(event.toolName)) {
       onMutate?.(event.toolName);
+    } else if (event.type === "message_end" && event.message?.role === "assistant") {
+      failure = event.message.stopReason === "error" ? event.message.errorMessage || "the model call failed" : null;
     }
   });
   try {
@@ -137,6 +146,7 @@ async function runPrompt(session, promptText, onDelta, onMutate) {
   } finally {
     unsubscribe();
   }
+  if (failure) throw new Error(failure);
   return session.getLastAssistantText() ?? text;
 }
 

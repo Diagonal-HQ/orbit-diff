@@ -722,6 +722,17 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       return [...ms.slice(0, -1), { ...last, text: last.text + delta }];
     });
 
+  // Drop `text` into the last (assistant) message if nothing streamed into it.
+  // The transcript is built from deltas, so a turn that returns its answer
+  // without emitting any would otherwise finish as a blank row.
+  const backfillLastMessage = (text) =>
+    setAskMessages((ms) => {
+      if (!ms.length || !text) return ms;
+      const last = ms[ms.length - 1];
+      if (last.role !== "assistant" || last.text) return ms;
+      return [...ms.slice(0, -1), { ...last, text }];
+    });
+
   // The chat just edited the working tree — re-parse the diff and swap it in so the
   // viewer reflects the new state. selectedFile clamps itself against the reloaded
   // list; we reset the diff cursor/scroll since line indices may have moved. Any
@@ -777,6 +788,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       })
       .then((res) => {
         if (token !== askToken.current) return;
+        backfillLastMessage(res?.text);
         setAsking(false);
         if (res?.changed) reloadAfterEdit();
       })
