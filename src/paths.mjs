@@ -40,16 +40,21 @@ export function cacheHome() {
 }
 
 // Filesystem-safe slug for a path segment (branches can contain `/`, etc.).
-function slug(s) {
-  return s.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "x";
+export function pathSlug(s) {
+  return String(s).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "x";
+}
+
+// The per-repo/branch directory for explicit inputs. Reset/recovery uses this
+// to remove state for a worktree that may no longer be usable as the cwd.
+export function orbitDirFor(root, branch) {
+  const name = pathSlug(root.split("/").filter(Boolean).pop() || "repo");
+  const hash = createHash("sha256").update(root).digest("hex").slice(0, 8);
+  return `${cacheHome()}/orbit-diff/${name}-${hash}/${pathSlug(branch)}`;
 }
 
 // The per-repo/branch directory under the global cache home.
 export function orbitDir() {
-  const root = repoRoot();
-  const name = slug(root.split("/").filter(Boolean).pop() || "repo");
-  const hash = createHash("sha256").update(root).digest("hex").slice(0, 8);
-  return `${cacheHome()}/orbit-diff/${name}-${hash}/${slug(branchName())}`;
+  return orbitDirFor(repoRoot(), branchName());
 }
 
 export function changeRequestPath() {

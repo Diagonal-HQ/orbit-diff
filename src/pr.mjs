@@ -36,6 +36,44 @@ const LIST_FIELDS = [
   "isDraft", "reviewDecision", "updatedAt", "url", "additions", "deletions", "labels",
 ].join(",");
 
+// Unlike the scoped Mine searches below, the All tab must not go through
+// GitHub's search API: search results are capped, and the old query also
+// excluded drafts. Walk the repository's open-PR connection directly instead.
+// `gh api --paginate` supplies `endCursor` until pageInfo.hasNextPage is false;
+// `--slurp` wraps the page objects in one JSON array for straightforward
+// parsing.
+const ALL_PRS_QUERY = `
+  query($owner: String!, $name: String!, $endCursor: String) {
+    repository(owner: $owner, name: $name) {
+      nameWithOwner
+      pullRequests(
+        first: 100
+        after: $endCursor
+        states: OPEN
+        orderBy: {field: UPDATED_AT, direction: DESC}
+      ) {
+        nodes {
+          number
+          title
+          author { login }
+          headRefName
+          baseRefName
+          isDraft
+          reviewDecision
+          updatedAt
+          url
+          additions
+          deletions
+          labels(first: 100) {
+            nodes { name color description }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+`;
+
 // One `gh pr list --search` pass. Returns [] on any gh error (the caller merges
 // several passes and would rather show a partial list than blow up).
 async function search(query, limit = 50) {
@@ -86,23 +124,38 @@ export async function listReviewPRs() {
   return [...byNumber.values()].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
 
-// List every open, non-draft PR in this repo, regardless of who's assigned or
-// requested to review — the "All" tab, for browsing PRs that aren't waiting on
-// you. Same shape/throw behavior as listReviewPRs.
-export async function listAllPRs() {
-  const repo = await repoSlug();
-  if (!repo) {
+// List every open PR in this repo, drafts included, regardless of who's
+// assigned or requested to review — the "All" tab. The optional runner is a
+// test seam; production callers use the gh helper above.
+export async function listAllPRs(runGh = gh) {
+  const res = await runGh([
+    "api", "graphql", "--paginate", "--slurp",
+    "-F", "owner={owner}",
+    "-F", "name={repo}",
+    "-f", `query=${ALL_PRS_QUERY}`,
+  ]);
+  if (res.status !== 0 || !res.stdout.trim()) {
     throw new Error("`gh` couldn't identify a GitHub repo here (is it installed, authed, and a GitHub remote?)");
   }
 
-  const prs = await search("is:open draft:false", 100);
-  return prs.map((pr) => ({ ...pr, repo })).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  try {
+    const pages = JSON.parse(res.stdout);
+    const repo = pages[0]?.data?.repository?.nameWithOwner;
+    if (!repo) throw new Error("missing repository");
+
+    const prs = pages.flatMap((page) => page?.data?.repository?.pullRequests?.nodes || []);
+    return prs
+      .map((pr) => ({ ...pr, labels: pr.labels?.nodes || [], repo }))
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  } catch {
+    throw new Error("`gh` returned an invalid response while listing this repo's pull requests");
+  }
 }
 
 // Resolve the PR for a specific branch straight from `gh`, bypassing the loaded
-// tab lists. The Mine/All tabs are scoped (open-only, and All drops drafts), so
-// a branch can have a real PR that isn't in either loaded set — this is the
-// fallback for `o` on a worktree when the in-memory lookup misses. `gh pr view
+// tab lists. The Mine/All tabs are open-only, so a branch can have a real PR
+// that isn't in either loaded set — this is the fallback for `o` on a worktree
+// when the in-memory lookup misses. `gh pr view
 // <branch>` returns that branch's associated PR whether it's a draft, closed,
 // or merged. Returns { number, url, state } or null (no PR / gh error).
 export async function findPrForBranch(branch) {

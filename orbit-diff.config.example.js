@@ -26,8 +26,9 @@ export default {
   review: {
     concurrency: 4, // how many files to review in parallel (1–8)
   },
-  // `orbit-diff prs` — a PR manager for the current repo. It lists the open,
-  // non-draft PRs assigned to you or awaiting your review. Picking one (enter)
+  // `orbit-diff prs` — a PR manager for the current repo. Mine lists open PRs
+  // assigned to you, awaiting your review, or authored by you; All lists every
+  // open PR, including drafts. Picking one (enter)
   // makes orbit-diff:
   //   1. create a git worktree for the PR branch,
   //   2. open a detached tmux review window with four panes —

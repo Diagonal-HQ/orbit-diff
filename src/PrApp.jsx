@@ -311,8 +311,8 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
   };
 
   // `o` on a worktree opens the matching PR in the browser (matched by branch).
-  // The loaded Mine/All tabs are scoped (open-only, and All drops drafts), so a
-  // branch's PR can genuinely exist without being in either list — when the
+  // The loaded Mine/All tabs are open-only, so a branch's PR can genuinely
+  // exist without being in either list — when the
   // in-memory lookup misses, fall back to asking `gh` for that branch's PR
   // directly (finds drafts/closed/merged and PRs on the tab you're not viewing).
   const openWorktreePr = (wt) => {

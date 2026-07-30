@@ -29,6 +29,10 @@ if (args[0] === "prs" || args[0] === "pr") {
   await runPrManager();
   process.exit(0);
 }
+if (args[0] === "reset") {
+  const { runResetCommand } = await import("./src/reset.mjs");
+  process.exit(await runResetCommand(args[1]));
+}
 // `orbit-diff __watchdog <pid>` — internal. The sidecar process spawned by
 // spawnWatchdog() to watch a viewer/prs process from outside and kill it if a
 // Bun runtime bug (see src/watchdog.mjs) wedges it at 100% CPU. Never launched

@@ -7,7 +7,7 @@
 import React from "react";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, openSync, closeSync, existsSync } from "node:fs";
-import { dirname, basename } from "node:path";
+import { dirname, basename, resolve } from "node:path";
 import { render } from "ink";
 import { PrApp } from "./PrApp.jsx";
 import { createMouseController } from "./mouse-select.mjs";
@@ -162,6 +162,12 @@ export async function runPrManager() {
     return `${dirname(root)}/${basename(root)}-worktrees/${slug(pr.headRefName)}`;
   };
 
+  // An existing directory is only reusable when Git recognizes it as this
+  // branch's worktree. Treating any directory as valid used to launch setup in
+  // stale/empty paths, producing misleading missing-package errors.
+  const validWorktree = (path, branch) =>
+    listWorktrees().some((wt) => resolve(wt.path) === resolve(path) && wt.branch === branch);
+
   // Start reviewing a PR: create its worktree (if new), record the session, and
   // open the detached three-pane review window (setup · claude · orbit-diff).
   // Re-starting a PR whose window is already open just focuses it. Returns
@@ -183,6 +189,11 @@ export async function runPrManager() {
     if (!existsSync(wtPath)) {
       const add = addWorktree(wtPath, pr.headRefName);
       if (!add.ok) return { ok: false, error: add.error };
+    } else if (!validWorktree(wtPath, pr.headRefName)) {
+      return {
+        ok: false,
+        error: `${wtPath} exists but is not a valid worktree for ${pr.headRefName}; run orbit-diff reset ${pr.headRefName}`,
+      };
     }
 
     const key = sessionKey(wtPath);
@@ -262,13 +273,17 @@ export async function runPrManager() {
     }
 
     // addWorktree checks out the branch if it's already local, otherwise fetches
-    // and creates it tracking origin/<branch>. An existing directory is reused
-    // as-is (it's already checked out to something).
+    // and creates it tracking origin/<branch>.
     let created = false;
     if (!existsSync(wtPath)) {
       const add = addWorktree(wtPath, branch);
       if (!add.ok) return { ok: false, error: add.error };
       created = true;
+    } else if (!validWorktree(wtPath, branch)) {
+      return {
+        ok: false,
+        error: `${wtPath} exists but is not a valid worktree for ${branch}; run orbit-diff reset ${branch}`,
+      };
     }
 
     const opened = openPlainWindow(wtPath, branch);

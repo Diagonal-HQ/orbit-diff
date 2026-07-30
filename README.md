@@ -31,6 +31,7 @@ orbit-diff update           # self-replaces with the latest release
 orbit-diff --version        # show the installed version
 orbit-diff init             # write a starter config (--force to overwrite)
 orbit-diff prs              # manage the PRs assigned to / awaiting you
+orbit-diff reset <branch>   # remove a broken local branch/worktree and its state
 ```
 
 Binaries are published for macOS arm64, Linux x64, and Linux arm64 (built on
@@ -119,9 +120,9 @@ constructs (block comments, template strings) may not carry state across lines.
 ## Manage PRs (`orbit-diff prs`)
 
 A second mode that turns orbit-diff into a lightweight PR manager for the
-**current repo**. It lists the open, non-draft PRs that are either assigned to
-you or awaiting your review, and spins up a whole review environment for the one
-you pick.
+**current repo**. The **Mine** tab lists open PRs assigned to you, awaiting your
+review, or authored by you; the **All** tab lists every open PR, including
+drafts. It can spin up a whole review environment for the one you pick.
 
 ```bash
 orbit-diff prs              # (alias: orbit-diff pr)
@@ -216,6 +217,20 @@ command, then removes the git worktree and drops the session. orbit-diff
 (destroy the provisioned instance, etc.), and it runs first (in the background,
 logged) so anything it does inside the worktree still sees it. Leave `done`
 empty if there's nothing external to tear down.
+
+If a worktree or its bookkeeping is broken, run this from any valid checkout of
+the same repository:
+
+```bash
+orbit-diff reset <branch>
+```
+
+Reset is intentionally destructive to local state. It closes the branch's
+orbit-diff tmux window, force-removes registered or stale worktree directories,
+prunes Git worktree metadata, deletes the local branch, and clears both
+path-hashed session records and branch-scoped viewer/AI state. The remote branch
+is never changed, so selecting the PR again creates a clean tracking branch and
+worktree from `origin`.
 
 Configure it in `~/.config/orbit-diff/config.js`. The tokens `{branch}` `{base}`
 `{number}` `{repo}` `{title}` `{url}` are substituted (shell-quoted), and
