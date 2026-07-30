@@ -24,6 +24,7 @@ import {
   buildReviewWindow,
 } from "./tmux.mjs";
 import { sessionKey, sessionPath, writeSession, updateSession, deleteSession, listSessions, sessionForWorktree } from "./session.mjs";
+import { createAgentPoller } from "./agent-state.mjs";
 import { spawnWatchdog } from "./watchdog.mjs";
 
 // Filesystem-safe slug for a branch name in a log filename.
@@ -368,6 +369,11 @@ export async function runPrManager() {
     return { ok: !error, error, killed, removed, ranDone: !!doneCmd, logPath };
   };
 
+  // Reads each review window's Claude pane so the worktrees rail can flag the
+  // agents that have finished their turn. Created once (it caches per pane
+  // between polls) and only outside tmux is it pointless — there are no panes.
+  const pollAgentStates = inTmux() ? createAgentPoller() : null;
+
   const mouse = createMouseController(process.stdout);
   const { stdin: lockedStdin, enable: enableScrollLock, disable: disableScrollLock } = mouse;
   enableScrollLock();
@@ -384,6 +390,7 @@ export async function runPrManager() {
       finishReview={finishReview}
       openUrl={openUrl}
       openWorktree={openWorktree}
+      pollAgentStates={pollAgentStates}
       config={config}
       mouse={mouse}
     />,

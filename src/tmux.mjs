@@ -51,6 +51,41 @@ export function sendLine(pane, text) {
   return tmux(["send-keys", "-t", pane, text, "Enter"]).status === 0;
 }
 
+// Every pane orbit-diff has tagged, in ONE tmux call:
+//   { pane, role, worktreePath, command, activity }
+// `@orbit_role` is a pane option and `@orbit_wt` a window option, but tmux
+// resolves pane formats up the option chain (pane → window), so both come back
+// from a single `list-panes -a`. `command` is the pane's foreground process
+// (used to tell a live agent from a pane that fell back to a bare shell) and
+// `activity` is the window's last-output timestamp, which lets callers skip
+// re-reading a pane that hasn't printed anything since the last look.
+// Untagged panes are dropped. Returns [] when tmux isn't answering.
+export function listTaggedPanes() {
+  const res = tmux([
+    "list-panes", "-a", "-F",
+    "#{pane_id}\t#{@orbit_role}\t#{@orbit_wt}\t#{pane_current_command}\t#{window_activity}",
+  ]);
+  if (res.status !== 0 || !res.stdout) return [];
+  const out = [];
+  for (const line of res.stdout.split("\n")) {
+    if (!line) continue;
+    const [pane, role, worktreePath, command, activity] = line.split("\t");
+    if (!pane || !role || !worktreePath) continue;
+    out.push({ pane, role, worktreePath, command: command || "", activity: activity || "" });
+  }
+  return out;
+}
+
+// The visible screen of a pane, as text, or null if the pane is gone. Works on
+// panes in other windows and other tmux sessions — nothing has to be focused —
+// and on full-screen TUIs like the Claude/Codex REPLs, where it returns what
+// they've drawn rather than the scrollback beneath them.
+export function capturePane(pane) {
+  const res = tmux(["capture-pane", "-p", "-t", pane]);
+  if (res.status !== 0) return null;
+  return res.stdout || "";
+}
+
 // Is this pane still alive?
 export function paneAlive(pane) {
   const res = tmux(["list-panes", "-a", "-F", "#{pane_id}"]);

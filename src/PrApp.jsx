@@ -18,6 +18,14 @@ const safeCall = (fn) => {
   }
 };
 
+// Shallow equality for the agent-state map, so an unchanged poll doesn't hand
+// React a new object and force a repaint.
+const sameStates = (a, b) => {
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  return ka.every((k) => a[k] === b[k]);
+};
+
 // PR-management TUI for the current repo.
 //
 //   ┌───────────────── PRs waiting on me ──────────────┬─ worktrees ─┐
@@ -34,7 +42,11 @@ const safeCall = (fn) => {
 // instance. `o` opens the PR in the browser, `d` tears its workspace down (when
 // one exists) via `finishReview`, `tab` moves focus to the worktrees pane (where
 // `enter` jumps to a worktree's tmux window, `o` opens its PR, and `d` also
-// tears it down), `n` opens a prompt for a branch name and hands it to
+// tears it down). Each worktree row also carries a second glyph for the state
+// of the coding agent running in its review window — a green `●` means that
+// agent finished its turn and is waiting on you (`!` that it's blocked on a
+// permission prompt, a dim `·` that it's still working) — polled off the tmux
+// panes by `pollAgentStates`. `n` opens a prompt for a branch name and hands it to
 // `startLocal` — the same worktree + review window as a PR, but on a brand-new
 // local branch with no PR behind it — `b` prompts for an *existing* branch
 // (usually one on origin) and hands it to `checkoutBranch`, which only checks it
@@ -43,7 +55,7 @@ const safeCall = (fn) => {
 // switch between the "Mine" tab (assigned to or awaiting review from you) and
 // "All" (every open PR in the repo) — each tab fetches its own list, cached
 // until the next `r` refresh.
-export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null, loadWorktrees, loadSessions, startReview, startLocal, checkoutBranch, finishReview, openUrl, openWorktree, config, mouse = null }) {
+export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null, loadWorktrees, loadSessions, startReview, startLocal, checkoutBranch, finishReview, openUrl, openWorktree, pollAgentStates = null, config, mouse = null }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
@@ -61,6 +73,9 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
   // Review sessions orbit-diff owns (from the session registry): drives the
   // per-PR "provisioning" spinner and the env-instance tags.
   const [sessions, setSessions] = useState(() => safeCall(loadSessions));
+  // worktree path → "busy" | "blocked" | "awaiting": what the coding agent in
+  // each review window is doing, read off its tmux pane (see agent-state.mjs).
+  const [agentStates, setAgentStates] = useState({});
   const [selected, setSelected] = useState(0);
   const [selectedWt, setSelectedWt] = useState(0);
   const [descScroll, setDescScroll] = useState(0); // scroll offset into the description pane
@@ -148,6 +163,32 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
     }, period);
     return () => clearInterval(id);
   }, [inFlight, loadSessions, loadWorktrees]);
+
+  // Poll what each review window's agent is up to, so a worktree whose agent
+  // has finished its turn lights up without you having to visit its window.
+  // Reading a pane is a tmux call per *changed* pane (the poller caches on the
+  // window's activity timestamp), so a screen of settled worktrees costs one
+  // `list-panes` per tick. Keep the previous object when nothing moved —
+  // returning a fresh one every 2.5s would repaint the whole frame for nothing.
+  useEffect(() => {
+    if (!pollAgentStates) return;
+    let live = true;
+    const tick = () => {
+      let next;
+      try {
+        next = pollAgentStates() || {};
+      } catch {
+        return; // a transient tmux hiccup keeps the last known states
+      }
+      if (live) setAgentStates((prev) => (sameStates(prev, next) ? prev : next));
+    };
+    tick(); // paint the first states immediately rather than 2.5s in
+    const id = setInterval(tick, 2500);
+    return () => {
+      live = false;
+      clearInterval(id);
+    };
+  }, [pollAgentStates]);
 
   // When the last in-flight review finishes (setup reported ready, or teardown
   // cleared its session), `inFlight` flips true→false — refetch the PR list +
@@ -341,10 +382,11 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
   const lowerH = Math.max(3, bodyH - topH);
   // One shared column split, so the top and bottom panes line up vertically.
   // The right rail only needs to fit a worktree row like
-  // "⧉  seer/fix/diagonal-b9-filter-empty-target-id #4341 EV10" (57 chars)
-  // without truncating, so keep it that narrow unless the terminal is wide
-  // enough that 30% would be even smaller.
-  const RIGHT_MIN_W = 57 + 4; // content width + border/padding
+  // "⧉ ● seer/fix/diagonal-b9-filter-empty-target-id #4341 EV10" (58 chars:
+  // worktree glyph, agent-state glyph, branch, PR, env) without truncating, so
+  // keep it that narrow unless the terminal is wide enough that 30% would be
+  // even smaller.
+  const RIGHT_MIN_W = 58 + 4; // content width + border/padding
   const rightW = Math.max(RIGHT_MIN_W, Math.floor(cols * 0.3));
   const leftW = Math.max(24, cols - rightW);
   const ov = current ? details[current.number] : undefined;
@@ -503,6 +545,7 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
           worktrees={worktrees}
           prByBranch={prByBranch}
           sessionByPath={sessionByPath}
+          agentStates={agentStates}
           selected={wtSel}
           focused={paneFocus === "worktrees"}
           width={rightW}
@@ -586,9 +629,21 @@ function PrList({ prs, loading, error, selected, focused, query, searching, view
   );
 }
 
+// Second glyph column in the worktrees rail: what the review window's coding
+// agent is doing. "awaiting" is the one you're scanning for — it means that
+// agent finished its turn and is sitting on an idle composer — so it gets the
+// only saturated colour; "busy" is deliberately near-invisible so a rail full
+// of churning agents doesn't compete with it.
+const AGENT_GLYPH = {
+  awaiting: { char: "●", color: "green" },
+  blocked: { char: "!", color: "yellow" },
+  busy: { char: "·", color: "gray" },
+};
+
 // Top-right pane: the repo's git worktrees, tagged with the matching PR number
-// when a worktree's branch is one of the PRs above.
-function WorktreePane({ worktrees, prByBranch, sessionByPath, selected, focused, width, height }) {
+// when a worktree's branch is one of the PRs above, and with the state of the
+// coding agent running in each one.
+function WorktreePane({ worktrees, prByBranch, sessionByPath, agentStates = {}, selected, focused, width, height }) {
   const listRoom = Math.max(1, height - 2 - 1); // minus border rows and the header
   const overflow = worktrees.length > listRoom;
   const room2 = overflow ? Math.max(1, listRoom - 1) : listRoom; // reserve a row for "… N more"
@@ -598,14 +653,24 @@ function WorktreePane({ worktrees, prByBranch, sessionByPath, selected, focused,
   const hidden = worktrees.length - window.length;
   const room = width - 4;
   const border = focused ? "blueBright" : "gray";
+  // Counted across every worktree, not just the visible slice, so the header
+  // still tells you someone's waiting when the rail has scrolled past them.
+  const waiting = worktrees.filter((w) => {
+    const s = agentStates[w.path];
+    return s === "awaiting" || s === "blocked";
+  }).length;
 
   return (
     <Box flexDirection="column" width={width} height={height} borderStyle="round" borderColor={border} paddingX={1}>
-      <Text bold color="blueBright" wrap="truncate">Worktrees ({worktrees.length})</Text>
+      <Text bold color="blueBright" wrap="truncate">
+        Worktrees ({worktrees.length})
+        {waiting > 0 ? <Text color="green"> · {waiting} waiting</Text> : null}
+      </Text>
       {worktrees.length === 0 && <Text dimColor>none</Text>}
       {window.map((w, i) => {
         const idx = start + i;
         const active = focused && idx === selected;
+        const agent = AGENT_GLYPH[agentStates[w.path]] || null;
         const label = w.bare
           ? "(bare)"
           : w.branch || (w.head ? `detached ${w.head.slice(0, 7)}` : "(detached)");
@@ -619,11 +684,13 @@ function WorktreePane({ worktrees, prByBranch, sessionByPath, selected, focused,
         return (
           <Text key={w.path + idx} inverse={active} wrap="truncate">
             {busy ? (
-              <Text color="yellow"><Spinner color="yellow" />  </Text>
+              <Text color="yellow"><Spinner color="yellow" /> </Text>
             ) : (
-              <Text color={failed ? "red" : "blueBright"}>{failed ? "✗  " : "⧉  "}</Text>
+              <Text color={failed ? "red" : "blueBright"}>{failed ? "✗ " : "⧉ "}</Text>
             )}
-            <Text color={prNum ? "cyan" : undefined}>{truncate(label, Math.max(4, room - 3 - tag.length))}</Text>
+            {agent ? <Text color={agent.color}>{agent.char}</Text> : <Text> </Text>}
+            <Text> </Text>
+            <Text color={prNum ? "cyan" : undefined}>{truncate(label, Math.max(4, room - 4 - tag.length))}</Text>
             {prNum ? <Text dimColor>{` #${prNum}`}</Text> : null}
             {env ? <Text color="cyan">{env}</Text> : null}
           </Text>

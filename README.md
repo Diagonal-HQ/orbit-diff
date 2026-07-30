@@ -133,7 +133,12 @@ orbit-diff prs              # (alias: orbit-diff pr)
   A `⧉` marks a PR that already has a worktree; a spinner marks one whose review
   environment is still provisioning; `EV<n>` shows its instance once it reports.
 - **Top-right** — the repo's git worktrees, each tagged with its matching PR
-  number and env instance (spinner while provisioning, `✗` if setup failed).
+  number and env instance (spinner while provisioning, `✗` if setup failed), plus
+  a second glyph for what the coding agent in that worktree is doing:
+  a green `●` when it has **finished its turn and is waiting on you**, `!` when
+  it's blocked on a permission prompt, and a dim `·` while it's still working.
+  The header counts them (`Worktrees (6) · 2 waiting`) so you can see at a glance
+  whether anything needs you without visiting each window.
 - **Bottom-left** — an overview of the highlighted PR: review decision,
   mergeability, diff size, labels, and the description.
 - **Bottom-right** — who's on the hook: requested reviewers, assignees, and the
@@ -169,6 +174,21 @@ drops you in a plain tmux window there — that's all. No `pr.setup`, no review
 panes, no session record, so nothing is provisioned and there's nothing to
 report back. It still lands in the worktrees pane, where `Enter` refocuses its
 window and `d` cleans it up like any other worktree.
+
+#### Which agents are waiting on you
+
+Neither Claude Code nor Codex publishes its turn state anywhere another process
+can read it, so orbit-diff reads the one thing they do publish: the screen. Every
+couple of seconds it looks at each review window's `claude` pane with
+`tmux capture-pane` — no focusing, nothing stolen — and tells a live spinner
+("`· Tempering… (1m 26s · ↓ 4.8k tokens)`") from a settled composer. Panes are
+only re-read when tmux says the window has printed something since the last
+look, so a rail of idle worktrees costs one `tmux list-panes` per tick.
+
+Because it's reading someone else's UI, treat it as a hint rather than a
+guarantee: an unfamiliar screen reports "waiting" rather than erroring, and a
+worktree whose agent has exited (leaving a bare shell) simply loses its glyph.
+Worktrees opened with `b` have no agent pane, so they never carry one.
 
 ### The review flow
 
