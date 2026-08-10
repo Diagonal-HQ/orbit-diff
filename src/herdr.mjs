@@ -3,26 +3,47 @@
 // `mux.mjs` picks between the two at startup; nothing else in the codebase
 // should import this module directly.
 //
-// Vocabulary. orbit-diff says "window" for the unit that holds one worktree's
-// four review panes. In tmux that's a window; in herdr it's a **tab** (herdr's
-// "workspace" is the tmux session). So every `window` id handed out here is a
-// herdr tab id, and `killWindow`/`focusWindow` are `tab close`/`tab focus`.
+// # Vocabulary
 //
-// Tagging. tmux let us set `@orbit_wt` once on the *window* and read it back
-// from any pane, because pane formats resolve up the option chain. herdr's
-// metadata lives on panes and workspaces — there's no tab-level store — so we
-// stamp all four panes individually. Two tokens go on each:
+// orbit-diff says "window" for the unit holding one worktree's review. Under
+// tmux that's a window. Under herdr it's a **workspace** — so every `window` id
+// this module hands out is a herdr workspace id, and `focusWindow`/`killWindow`
+// are `workspace focus`/`workspace close`.
 //
-//   orbit_wt     the worktree's absolute path
-//   orbit_wtkey  a 16-hex-char hash of that path (see session.mjs)
-//   orbit_role   status | setup | claude | diff
+// A workspace rather than a tab for three reasons:
 //
-// The hash is belt-and-braces: herdr documents a 1-32 ASCII charset limit on
-// token *names* and says nothing about values, but if long paths with slashes
-// turn out to be rejected or truncated, `orbit_wtkey` still identifies the
-// worktree and we resolve it back through the session registry. Review windows
-// keep working either way; the only thing lost in that case is dedup for plain
-// worktree tabs, which have no session record to resolve against.
+//   1. herdr stores metadata on panes and workspaces but NOT on tabs. A tab can
+//      only be found via its panes' tokens, which is how a half-built tab used
+//      to end up unfindable and unclosable. A workspace is tagged directly, once,
+//      on the container — the same shape tmux gave us with a window option.
+//   2. `workspace list` is global by construction, where the docs never say
+//      whether `pane list` is scoped to the focused workspace. Anchoring
+//      find/focus/close on workspaces means the operations that matter don't
+//      depend on that unknown.
+//   3. Closing a review takes any extra tabs you opened for that worktree with
+//      it, instead of orphaning them.
+//
+// # Tagging
+//
+//   on the workspace:  orbit_wt    the worktree's absolute path
+//                      orbit_wtkey a 16-hex-char hash of it (see session.mjs)
+//   on each pane:      orbit_role  status | setup | diff | claude | codex
+//                      (plus both worktree tokens, so a pane is still placeable
+//                       if the workspace tag is ever lost)
+//
+// The hash is belt-and-braces. herdr documents a 1-32 ASCII charset limit on
+// token *names* and says nothing about values; if long slash-bearing paths turn
+// out not to round-trip, the hash still identifies the worktree and lookups keep
+// working. Only the agent glyph needs the path itself.
+//
+// # Where the docs are silent
+//
+// This backend discovers rather than guesses. The field tokens come back in is
+// undocumented, so `tokensOf` searches for a map containing tokens we wrote
+// rather than betting on a name. `pane list` scoping is undocumented, so
+// `listTaggedPanes` notices when a global call misses and re-asks per workspace.
+// `--no-focus` is unverified, so building a review checks `focused` afterwards
+// and puts the view back if it moved.
 //
 // Everything fails soft, exactly as the tmux backend does: an unreachable or
 // unparseable herdr answers as "nothing there" rather than throwing, so a dead
@@ -249,11 +270,66 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   // `pr.claude` in it ourselves, so it is an agent pane by construction. The
   // trade is that under herdr we can't notice the REPL exiting, and such a
   // worktree reads as "waiting on you" rather than dropping its glyph.
-  const listTaggedPanes = () => {
-    const res = run(["pane", "list"]);
+  // Every workspace orbit-diff has tagged: { window, worktreePath, worktreeKey }.
+  //
+  // The workspace IS the container for a worktree's review, so this is the
+  // primary lookup — and it's the one that made the workspace model worth
+  // switching to. `workspace list` is global by construction, where `pane list`
+  // may or may not be scoped to the focused workspace (herdr's docs don't say).
+  // Anchoring find/focus/close here means the operations that matter don't
+  // depend on that unknown; only the agent glyph does.
+  const taggedWorkspaces = () => {
+    const res = run(["workspace", "list"]);
     if (res.status !== 0) return [];
-    const panes = pickArray(parseJson(res.stdout), "panes");
-    if (!panes.length) return [];
+    const out = [];
+    for (const w of pickArray(parseJson(res.stdout), "workspaces")) {
+      const tokens = tokensOf(w) || {};
+      const worktreePath = tokens[TOK_WT] || "";
+      const worktreeKey = tokens[TOK_WTKEY] || "";
+      if (!worktreePath && !worktreeKey) continue;
+      const window = pickField(w, ["workspace_id", "id"]);
+      if (window) out.push({ window, worktreePath, worktreeKey });
+    }
+    return out;
+  };
+
+  // Every pane orbit-diff has tagged — the same contract `listTaggedPanes` has
+  // in the tmux backend:
+  //   { pane, role, worktreePath, worktreeKey, command, activity, window, agentStatus }
+  //
+  // `window` is the pane's WORKSPACE, not its tab, because that's orbit-diff's
+  // unit of "one worktree's review". `activity` is herdr's per-pane `revision`
+  // counter, which serves the same purpose as tmux's `window_activity`: it
+  // changes when the pane does, so an unchanged pane can be answered from cache
+  // without re-reading its screen.
+  //
+  // `command` has no honest herdr equivalent. agent-state.mjs reads it for one
+  // thing — telling a running REPL from a pane whose agent exited and left a
+  // bare shell — and PaneInfo carries no foreground process name to answer it.
+  //
+  // It must NOT be derived from `agent_session`: herdr populates that "when an
+  // official integration has reported a native session reference" and omits it
+  // otherwise, so a perfectly live screen-detected agent has none. Reporting ""
+  // there would make agent-state.mjs skip the pane as a shell, and a worktree
+  // whose agent herdr can't classify would lose its glyph entirely — the exact
+  // case the scrape fallback exists to cover.
+  //
+  // So a tagged agent pane always reports something non-empty: we launched the
+  // agent in it ourselves, so it is an agent pane by construction. The trade is
+  // that under herdr we can't notice the REPL exiting, and such a worktree reads
+  // as "waiting on you" rather than dropping its glyph.
+  const listTaggedPanes = () => {
+    const workspaces = taggedWorkspaces();
+    const byWorkspace = new Map(workspaces.map((w) => [w.window, w]));
+
+    // One global call, as under tmux. If it comes back without any of our
+    // panes but we know of tagged workspaces, `pane list` is scoped to the
+    // focused workspace — so ask each workspace in turn instead. Costs one call
+    // per active review, and only on a server that needs it.
+    let panes = readPanes([]);
+    if (workspaces.length && !panes.some((p) => byWorkspace.has(pickField(p, ["workspace_id"])))) {
+      panes = workspaces.flatMap((w) => readPanes(["--workspace", w.window]));
+    }
 
     let byKey = null; // built lazily — only if some pane lost its path token
     const out = [];
@@ -262,8 +338,13 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
       const role = tokens[TOK_ROLE];
       if (!role) continue;
 
-      const worktreeKey = tokens[TOK_WTKEY] || "";
-      let worktreePath = tokens[TOK_WT] || "";
+      const window = pickField(p, ["workspace_id"]) || "";
+      const fromWorkspace = byWorkspace.get(window);
+
+      // The workspace's own tag is the most reliable source — it's written once
+      // on the container and can't be lost by a pane being replaced.
+      const worktreeKey = tokens[TOK_WTKEY] || (fromWorkspace && fromWorkspace.worktreeKey) || "";
+      let worktreePath = tokens[TOK_WT] || (fromWorkspace && fromWorkspace.worktreePath) || "";
       if (!worktreePath && worktreeKey) {
         if (resolveKey) worktreePath = resolveKey(worktreeKey) || "";
         else {
@@ -279,7 +360,6 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
 
       const pane = pickField(p, ["pane_id", "id"]);
       if (!pane) continue;
-      const agentStatus = pickField(p, ["agent_status"]) || "";
       // The agent's name when herdr knows it (`agent` for a screen-detected
       // one, `agent_session` for an officially integrated one), else a marker
       // that keeps the pane in the scraper's sights. Never "".
@@ -295,23 +375,33 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
         worktreeKey,
         command: agent,
         activity: pickField(p, ["revision"]) || "",
-        window: pickField(p, ["tab_id"]) || "",
-        agentStatus,
+        window,
+        tab: pickField(p, ["tab_id"]) || "",
+        agentStatus: pickField(p, ["agent_status"]) || "",
       });
     }
     return out;
   };
 
-  // The tab id holding this worktree's panes, or null. Scans every workspace,
-  // matching tmux's `list-windows -a`.
+  function readPanes(extra) {
+    const res = run(["pane", "list", ...extra]);
+    if (res.status !== 0) return [];
+    return pickArray(parseJson(res.stdout), "panes");
+  }
+
+  // The workspace holding this worktree's review, or null.
   //
   // Matches on the path token OR its hash. The hash is 16 hex characters and
   // can't be mangled by any plausible token-value limit, so this keeps working
-  // even if long slash-bearing paths turn out not to round-trip — which is the
-  // difference between "the agent glyph is missing" and "reviews can never be
-  // re-focused, closed, or cleaned up".
+  // even if long slash-bearing paths turn out not to round-trip — the difference
+  // between "the agent glyph is missing" and "reviews can never be re-focused,
+  // closed, or cleaned up". Falls back to scanning panes for a workspace that
+  // exists but whose container tag didn't land.
   const findWindowByWorktree = (path) => {
     const key = sessionKey(path);
+    for (const w of taggedWorkspaces()) {
+      if (w.worktreePath === path || w.worktreeKey === key) return w.window;
+    }
     for (const p of listTaggedPanes()) {
       if (!p.window) continue;
       if (p.worktreePath === path || p.worktreeKey === key) return p.window;
@@ -319,8 +409,8 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     return null;
   };
 
-  const focusWindow = (id) => ok(["tab", "focus", id]);
-  const killWindow = (id) => ok(["tab", "close", id]);
+  const focusWindow = (id) => ok(["workspace", "focus", id]);
+  const killWindow = (id) => ok(["workspace", "close", id]);
 
   // `pane run` hands the command to herdr rather than typing it, so unlike
   // tmux's send-keys there's no race with a shell that hasn't drawn its prompt.
@@ -331,7 +421,7 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   // interpret its argument, so the newline has to come through `send-keys`.
   //
   // (herdr also has `agent prompt`, which is purpose-built for handing a prompt
-  // to a detected agent. It's the better call for the Claude pane specifically,
+  // to a detected agent. It's the better call for an agent pane specifically,
   // but it needs herdr to have recognized the agent; this path works on any
   // pane and mirrors what the tmux backend does.)
   const sendLine = (pane, text) => {
@@ -350,78 +440,71 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
 
   const paneAlive = (pane) => ok(["pane", "get", pane]);
 
-  // Stamp a pane so later scans can find it. Tokens are written without a TTL
-  // so they live as long as the pane does.
+  const wtTokens = (worktreePath) => [
+    "--token", `${TOK_WT}=${worktreePath}`,
+    "--token", `${TOK_WTKEY}=${sessionKey(worktreePath)}`,
+  ];
+
+  // Stamp the container. This is the tagging tmux gave us for free with a window
+  // option and herdr tabs can't do at all: one write, on the thing that outlives
+  // every pane inside it. Tokens carry no TTL, so they last as long as it does.
+  const tagWorkspace = (workspace, worktreePath) =>
+    ok(["workspace", "report-metadata", workspace, "--source", SOURCE, ...wtTokens(worktreePath)]);
+
+  // Stamp a pane with its role. The worktree tokens go on too, so a pane is
+  // still placeable if the workspace tag is ever lost.
   const tag = (pane, role, worktreePath) =>
     ok([
       "pane", "report-metadata", pane,
       "--source", SOURCE,
       "--token", `${TOK_ROLE}=${role}`,
-      "--token", `${TOK_WT}=${worktreePath}`,
-      "--token", `${TOK_WTKEY}=${sessionKey(worktreePath)}`,
+      ...wtTokens(worktreePath),
     ]);
 
-  // A bare single-pane tab rooted at `path` — no review panes, nothing run in
-  // it. Focused on creation, matching tmux's `new-window` (which selects it),
+  // A bare single-pane workspace rooted at `path` — no review tabs, nothing run
+  // in it. Focused on creation, matching tmux's `new-window` (which selects it),
   // and tagged so a later open re-focuses rather than duplicating.
   const openPlainWindow = (path, name) => {
-    const created = run(["tab", "create", "--cwd", path, "--label", name || "worktree", "--focus"]);
+    const created = run(["workspace", "create", "--cwd", path, "--label", name || "worktree", "--focus"]);
     if (created.status !== 0) {
-      return { ok: false, error: (created.stderr || "").trim() || "herdr tab create failed" };
+      return { ok: false, error: (created.stderr || "").trim() || "herdr workspace create failed" };
     }
-    const tab = idFrom(created.stdout, ["tab_id", "id"], { bare: true });
-    const pane = idFrom(created.stdout, ["pane_id"]) || firstPaneOfTab(tab);
+    const workspace = idFrom(created.stdout, ["workspace_id", "id"], { bare: true });
+    if (workspace) tagWorkspace(workspace, path);
+    const pane = idFrom(created.stdout, ["pane_id"]) || firstPaneOf(workspace, null);
     if (pane) tag(pane, "plain", path);
     return { ok: true };
   };
 
-  // The pane herdr put in a freshly created tab, when `tab create` reported the
-  // tab but not its pane.
-  function firstPaneOfTab(tabId) {
-    if (!tabId) return null;
-    const res = run(["pane", "list"]);
-    if (res.status !== 0) return null;
-    for (const p of pickArray(parseJson(res.stdout), "panes")) {
-      if (pickField(p, ["tab_id"]) === tabId) return pickField(p, ["pane_id", "id"]);
+  // The pane herdr put in a freshly created workspace or tab, for when the
+  // create call reported the container but not its pane.
+  function firstPaneOf(workspaceId, tabId) {
+    if (!workspaceId && !tabId) return null;
+    for (const p of readPanes(workspaceId ? ["--workspace", workspaceId] : [])) {
+      if (tabId && pickField(p, ["tab_id"]) !== tabId) continue;
+      if (!tabId && workspaceId && pickField(p, ["workspace_id"]) !== workspaceId) continue;
+      return pickField(p, ["pane_id", "id"]);
     }
     return null;
   }
 
-  // Build the four-pane review tab for a worktree, laid out as the tmux backend
-  // does:
+  // Create a tab in `workspace` and return its pane, or null.
+  function addTab(workspace, worktreePath, label) {
+    const res = run([
+      "tab", "create", "--workspace", workspace, "--cwd", worktreePath,
+      "--label", label, "--no-focus",
+    ]);
+    if (res.status !== 0) return { error: (res.stderr || "herdr tab create failed").trim() };
+    const tab = idFrom(res.stdout, ["tab_id"], { bare: true });
+    const pane = idFrom(res.stdout, ["pane_id"]) || firstPaneOf(workspace, tab);
+    if (!pane) return { error: `couldn't parse the pane id for the ${label} tab` };
+    return { pane };
+  }
+
+  // Put the view back if building a review workspace moved it.
   //
-  //   ┌ status ┬─────────── claude ────────────┐
-  //   ├────────┤                                │
-  //   │ setup  │                                │
-  //   ├────────────────── orbit-diff ───────────┤
-  //   └────────────────────────────────────────-┘
-  //
-  // Two things differ from tmux, both forced by herdr's split API:
-  //
-  //   * herdr splits only `right` and `down`, never `-b`. tmux built this by
-  //     splitting *above* the original pane, so the original became the diff
-  //     pane at the bottom; here the original stays on top and the diff pane is
-  //     the one we create. Same geometry, opposite construction order.
-  //   * herdr sizes splits by ratio only — there's no `-l 8` for an absolute
-  //     row count. tmux pinned the status pane at 8 lines (exactly what
-  //     pr-status.mjs prints); the closest herdr can do is a fraction of the
-  //     top row, so on a short terminal that pane can clip where tmux's didn't.
-  //
-  // Nothing here focuses anything. herdr documents its default as "workspace
-  // and tab creation, and pane splitting, leave focus unchanged", with
-  // `--focus` meaning "selects the new layout" — it does NOT say that's scoped
-  // to the tab's own active pane, so passing it risks yanking the user out of
-  // the PR list, which is exactly the contract this flow promises not to break.
-  //
-  // The cost is that the tab opens with its original pane (`status`) active
-  // rather than the diff pane, where tmux ends with `select-pane -t diff`.
-  // herdr's `pane focus` is directional only — you can't focus a pane by id —
-  // so there's no way to set it without risking the same steal. Landing on the
-  // wrong pane is a keystroke; stealing focus mid-review is not.
-  // Put the view back if building a review tab moved it.
-  //
-  // herdr's docs say creation and splitting "leave focus unchanged", and we
-  // pass `--no-focus` everywhere, so this should never fire. But the whole
+  // herdr's docs say creation and splitting "leave focus unchanged", and we pass
+  // `--no-focus` everywhere, so this should never fire. But the whole
   // background-review contract rests on that being true, it's the single most
   // disruptive way for this backend to be wrong, and it has never been checked
   // against a live server. PaneInfo carries `focused`, so verifying costs one
@@ -440,68 +523,107 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
 
   const buildReviewWindow = (opts) => {
     if (!inMux()) return { error: "not inside herdr — start herdr to open a review window" };
-    const built = buildReviewTab(opts);
+    const built = buildReviewSpace(opts);
     restoreFocus();
     return built;
   };
 
-  const buildReviewTab = ({ worktreePath, name, statusCmd, setupCmd, claudeCmd, diffCmd }) => {
+  // Build a worktree's review as its own herdr WORKSPACE of three tabs.
+  //
+  //   tab 1 "review"  ┌ overview ┬──────────────────────┐
+  //                   ├──────────┤      orbit-diff      │
+  //                   │  setup   │                      │
+  //                   └──────────┴──────────────────────┘
+  //   tab 2 "claude"  the Claude CLI, full tab
+  //   tab 3 "codex"   the Codex CLI, full tab
+  //
+  // Why a workspace rather than a tab: herdr stores metadata on panes and
+  // workspaces but NOT on tabs, so a tab can only be found via its panes'
+  // tokens — which is how a half-built tab used to end up unfindable and
+  // unclosable. A workspace can be tagged directly, once, on the container, the
+  // way tmux tagged a window. It also means closing a review takes any extra
+  // tabs you opened for that worktree with it.
+  //
+  // The agents get whole tabs rather than a pane each: they're the things you
+  // sit in and talk to, and a 30%-wide column is a poor place to do that.
+  // Tab 1 keeps everything you only glance at, with the diff viewer given the
+  // full height of the tab — it's the widest, tallest thing here for a reason.
+  //
+  // Two constraints from herdr's split API shape this:
+  //   * splits go only `right` and `down`, never tmux's `-b`, so the tab's
+  //     original pane is always the top-left one and everything else is created
+  //     from it;
+  //   * splits size by ratio only — there's no `-l 8` for an absolute row count,
+  //     so the overview pane is a fraction of the left column rather than the
+  //     exactly-8-rows pr-status.mjs prints. On a short terminal it can clip.
+  //
+  // Nothing here focuses anything (see restoreFocus above).
+  const buildReviewSpace = ({ worktreePath, name, statusCmd, setupCmd, diffCmd, claudeCmd, codexCmd }) => {
     const created = run([
-      "tab", "create", "--cwd", worktreePath, "--label", name || "review", "--no-focus",
+      "workspace", "create", "--cwd", worktreePath, "--label", name || "review", "--no-focus",
     ]);
     if (created.status !== 0) {
-      return { error: (created.stderr || "herdr tab create failed").trim() };
+      return { error: (created.stderr || "herdr workspace create failed").trim() };
     }
-    const window = idFrom(created.stdout, ["tab_id", "id"], { bare: true });
-    const statusPane = idFrom(created.stdout, ["pane_id"]) || firstPaneOfTab(window);
-    if (!window || !statusPane) return { error: "couldn't parse herdr tab/pane ids", window };
+    const window = idFrom(created.stdout, ["workspace_id", "id"], { bare: true });
+    if (!window) return { error: "couldn't parse the herdr workspace id" };
 
-    // Tag before splitting, and tag each new pane as it appears. A tab is only
-    // findable through its panes' tokens, so a build that dies halfway has to
-    // leave behind something `findWindowByWorktree` can still see — otherwise
-    // neither `d` nor `orbit-diff reset` could ever close the partial tab.
-    // (tmux gets this for free: `@orbit_wt` goes on the window itself in step 1.)
-    tag(statusPane, "status", worktreePath);
+    // Tag the container before anything else can fail. However badly the rest of
+    // this goes, the workspace is now findable — so `d` and `orbit-diff reset`
+    // can always close it.
+    tagWorkspace(window, worktreePath);
 
-    // 1. Split the whole tab horizontally: the original pane keeps the top
-    //    third, the new pane below it is the diff viewer.
-    const bottom = run([
-      "pane", "split", statusPane, "--direction", "down", "--ratio", "0.33",
-      "--cwd", worktreePath, "--no-focus",
-    ]);
-    if (bottom.status !== 0) return { error: (bottom.stderr || "herdr pane split failed").trim(), window };
-    const diffPane = idFrom(bottom.stdout, ["pane_id", "id"], { bare: true });
-    if (!diffPane) return { error: "couldn't parse herdr pane id", window };
-    tag(diffPane, "diff", worktreePath);
+    const overviewPane = idFrom(created.stdout, ["pane_id"]) || firstPaneOf(window, null);
+    if (!overviewPane) return { error: "couldn't parse the herdr pane id", window };
+    tag(overviewPane, "status", worktreePath);
 
-    // 2. Split the top row left|right — Claude takes 70% of it. The left 30% is
-    //    short status text and a script runner, not code, so it needs no more.
+    // Tab 1, split 1: give the diff viewer the right-hand 70%, full height.
     const right = run([
-      "pane", "split", statusPane, "--direction", "right", "--ratio", "0.30",
+      "pane", "split", overviewPane, "--direction", "right", "--ratio", "0.30",
       "--cwd", worktreePath, "--no-focus",
     ]);
     if (right.status !== 0) return { error: (right.stderr || "herdr pane split failed").trim(), window };
-    const claudePane = idFrom(right.stdout, ["pane_id", "id"], { bare: true });
-    if (!claudePane) return { error: "couldn't parse herdr pane id", window };
-    tag(claudePane, "claude", worktreePath);
+    const diffPane = idFrom(right.stdout, ["pane_id", "id"], { bare: true });
+    if (!diffPane) return { error: "couldn't parse the herdr pane id", window };
+    tag(diffPane, "diff", worktreePath);
 
-    // 3. Stack setup under status in that left column. tmux gave status a fixed
-    //    8 rows; 45% of a third of the tab is the nearest ratio-only equivalent.
+    // Tab 1, split 2: stack setup under overview in the left column. Overview is
+    // ~8 lines of branch/PR/check state; setup is a script that scrolls, so it
+    // gets the larger share.
     const below = run([
-      "pane", "split", statusPane, "--direction", "down", "--ratio", "0.45",
+      "pane", "split", overviewPane, "--direction", "down", "--ratio", "0.35",
       "--cwd", worktreePath, "--no-focus",
     ]);
     if (below.status !== 0) return { error: (below.stderr || "herdr pane split failed").trim(), window };
     const setupPane = idFrom(below.stdout, ["pane_id", "id"], { bare: true });
-    if (!setupPane) return { error: "couldn't parse herdr pane id", window };
+    if (!setupPane) return { error: "couldn't parse the herdr pane id", window };
     tag(setupPane, "setup", worktreePath);
 
-    if (statusCmd) runInPane(statusPane, statusCmd);
-    if (setupCmd) runInPane(setupPane, setupCmd);
-    if (claudeCmd) runInPane(claudePane, claudeCmd);
-    if (diffCmd) runInPane(diffPane, diffCmd);
+    // Tabs 2 and 3: one agent each, whole tab.
+    const claudeTab = addTab(window, worktreePath, "claude");
+    if (claudeTab.error) return { error: claudeTab.error, window };
+    tag(claudeTab.pane, "claude", worktreePath);
 
-    return { window, panes: { status: statusPane, setup: setupPane, claude: claudePane, diff: diffPane } };
+    const codexTab = addTab(window, worktreePath, "codex");
+    if (codexTab.error) return { error: codexTab.error, window };
+    tag(codexTab.pane, "codex", worktreePath);
+
+    if (statusCmd) runInPane(overviewPane, statusCmd);
+    if (setupCmd) runInPane(setupPane, setupCmd);
+    if (diffCmd) runInPane(diffPane, diffCmd);
+    if (claudeCmd) runInPane(claudeTab.pane, claudeCmd);
+    if (codexCmd) runInPane(codexTab.pane, codexCmd);
+
+    return {
+      window,
+      panes: {
+        status: overviewPane,
+        setup: setupPane,
+        diff: diffPane,
+        claude: claudeTab.pane,
+        codex: codexTab.pane,
+      },
+    };
   };
 
   // What each review worktree's agent is doing, straight from herdr — no

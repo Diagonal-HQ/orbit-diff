@@ -6,8 +6,12 @@ import { sessionKey } from "./session.mjs";
 // so every test here drives the backend through an injected `run` that stands in
 // for the CLI. That covers the argument-building and parsing — the parts we can
 // be sure about — and deliberately not the parts that depend on a live server.
+//
+// A worktree's review is a herdr WORKSPACE of three tabs, so "window" ids in
+// this backend are workspace ids. See the header of herdr.mjs for why.
 
 const IN_HERDR = { HERDR_PANE_ID: "w1:p1" };
+const SOURCE = ["--source", "orbit-diff"];
 
 // A fake CLI. `routes` maps a matcher over the argv array to the stdout it
 // should print; anything unmatched succeeds silently, like a herdr command that
@@ -26,9 +30,16 @@ function fakeHerdr(routes = []) {
 
 const is = (...prefix) => (args) => prefix.every((p, i) => args[i] === p);
 
-// Verbatim `herdr pane list` output from a real server (herdr in a plain shell,
-// one untagged pane). Everything below is written against invented payloads, so
-// this is the one fixture that proves the shape assumption itself.
+// herdr wraps every reply as {id, result}. Match that, since getting it wrong
+// was a real bug (see the request-id test below).
+const reply = (type, payload) => JSON.stringify({ id: `cli:${type}`, result: { type, ...payload } });
+
+// ---- real output ----
+
+// Verbatim `herdr pane list` from a real server (herdr in a plain shell, one
+// untagged pane). Everything else here is written against payloads I invented,
+// so this is the one fixture that proves the shape assumption rather than
+// restating it.
 const REAL_PANE_LIST =
   '{"id":"cli:pane:list","result":{"panes":[{"agent_status":"unknown","cwd":"/Users/owen",' +
   '"focused":true,"foreground_cwd":"/Users/owen","pane_id":"w3:p1","revision":1,' +
@@ -46,89 +57,161 @@ test("real `herdr pane list` output parses, and an untagged pane is ignored", ()
   expect(h.nativeAgentStates()).toEqual({});
 });
 
-// The reply envelope's `id` is the REQUEST id ("cli:tab:create"), not a
-// resource id. Reading fields before unwrapping `result` handed that string
-// back as the tab id, so every later `tab focus`/`tab close` targeted nothing.
+// The envelope's `id` is the REQUEST id ("cli:workspace:create"), not a resource
+// id. Reading fields before unwrapping `result` handed that string back as the
+// container id, so every later focus/close targeted nothing.
 test("the envelope's request id is never mistaken for a resource id", () => {
-  const created = '{"id":"cli:tab:create","result":{"tab_id":"w3:t2","pane_id":"w3:p2","type":"tab_create"}}';
-  const split = '{"id":"cli:pane:split","result":{"pane_id":"w3:p9","type":"pane_split"}}';
-  const run = (args) => ({
-    status: 0,
-    stdout: args[0] === "tab" ? created : args[1] === "split" ? split : "",
-    stderr: "",
-  });
+  const run = (args) => {
+    if (is("workspace", "create")(args)) {
+      return { status: 0, stdout: reply("workspace_create", { workspace_id: "w9", pane_id: "w9:p1" }), stderr: "" };
+    }
+    if (args[1] === "split") return { status: 0, stdout: reply("pane_split", { pane_id: "w9:p2" }), stderr: "" };
+    if (is("tab", "create")(args)) return { status: 0, stdout: reply("tab_create", { pane_id: "w9:p3" }), stderr: "" };
+    return { status: 0, stdout: "", stderr: "" };
+  };
   const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/x" });
-  expect(built.window).toBe("w3:t2");
-  expect(built.panes.status).toBe("w3:p2");
+  expect(built.window).toBe("w9");
+  expect(built.panes.status).toBe("w9:p1");
 });
 
-// One `pane list` payload with all four review panes tagged, in the shape the
-// socket API documents: pane_id / tab_id / agent_status / revision, plus the
-// metadata tokens we report.
-const PANE_LIST = JSON.stringify({
-  id: "cli:pane:list",
-  result: { type: "pane_list", panes: [
-    {
-      pane_id: "w1:p1", tab_id: "t1", revision: 7,
-      tokens: { orbit_role: "status", orbit_wt: "/wt/feature", orbit_wtkey: "abc123" },
-    },
-    {
-      pane_id: "w1:p2", tab_id: "t1", revision: 12, agent_status: "working",
-      agent_session: { id: "s1" },
-      tokens: { orbit_role: "claude", orbit_wt: "/wt/feature", orbit_wtkey: "abc123" },
-    },
-    {
-      pane_id: "w2:p1", tab_id: "t2", revision: 3, agent_status: "blocked",
-      agent_session: { id: "s2" },
-      tokens: { orbit_role: "claude", orbit_wt: "/wt/other", orbit_wtkey: "def456" },
-    },
-    // Untagged — someone else's pane. Must be ignored entirely.
-    { pane_id: "w3:p1", tab_id: "t3", revision: 1 },
-  ] },
+// ---- reading the world ----
+
+const WS_LIST = reply("workspace_list", {
+  workspaces: [
+    { workspace_id: "w1", tokens: { orbit_wt: "/wt/feature", orbit_wtkey: sessionKey("/wt/feature") } },
+    { workspace_id: "w2", tokens: { orbit_wt: "/wt/other", orbit_wtkey: sessionKey("/wt/other") } },
+    { workspace_id: "w9", label: "someone else's" }, // untagged — not ours
+  ],
 });
 
-test("listTaggedPanes maps herdr's pane list onto the tmux backend's contract", () => {
-  const { run } = fakeHerdr([[is("pane", "list"), PANE_LIST]]);
-  const h = createHerdrBackend({ run, env: IN_HERDR });
+const PANE_LIST = reply("pane_list", {
+  panes: [
+    { pane_id: "w1:p1", tab_id: "w1:t1", workspace_id: "w1", revision: 7, tokens: { orbit_role: "status" } },
+    {
+      pane_id: "w1:p9", tab_id: "w1:t2", workspace_id: "w1", revision: 12,
+      agent_status: "working", agent_session: { id: "s1" }, tokens: { orbit_role: "claude" },
+    },
+    {
+      pane_id: "w2:p9", tab_id: "w2:t2", workspace_id: "w2", revision: 3,
+      agent_status: "blocked", tokens: { orbit_role: "claude" },
+    },
+    { pane_id: "w9:p1", tab_id: "w9:t1", workspace_id: "w9", revision: 1 }, // untagged
+  ],
+});
 
+const world = () => fakeHerdr([[is("workspace", "list"), WS_LIST], [is("pane", "list"), PANE_LIST]]);
+
+test("panes inherit their worktree from the workspace that contains them", () => {
+  const h = createHerdrBackend({ run: world().run, env: IN_HERDR });
   const panes = h.listTaggedPanes();
   expect(panes).toHaveLength(3); // the untagged pane is dropped
 
-  const claude = panes.find((p) => p.pane === "w1:p2");
+  const claude = panes.find((p) => p.pane === "w1:p9");
   expect(claude.role).toBe("claude");
-  expect(claude.worktreePath).toBe("/wt/feature");
-  expect(claude.window).toBe("t1");
+  expect(claude.worktreePath).toBe("/wt/feature"); // from the workspace, not the pane
+  expect(claude.window).toBe("w1"); // the WORKSPACE is the review container
+  expect(claude.tab).toBe("w1:t2");
   expect(claude.activity).toBe("12"); // revision stands in for window_activity
-  expect(claude.command).toBe("s1"); // named from the reported agent session
+  expect(claude.command).toBe("s1");
 });
 
-// `command` exists so agent-state.mjs can skip a pane whose REPL exited and
-// left a bare shell. herdr can't answer that — PaneInfo has no foreground
-// process — and `agent_session` is NOT a stand-in: herdr populates it only when
-// an official integration reported a native session, so a live screen-detected
-// agent has none. Deriving `command` from it would make the scraper skip
-// exactly the panes that most need scraping.
-test("a pane herdr can't identify still reports a command, so it gets scraped", () => {
-  const payload = JSON.stringify({
+test("findWindowByWorktree returns the workspace, straight off the workspace tag", () => {
+  const { run, calls } = world();
+  const h = createHerdrBackend({ run, env: IN_HERDR });
+  expect(h.findWindowByWorktree("/wt/other")).toBe("w2");
+  expect(h.findWindowByWorktree("/wt/nothing-here")).toBe(null);
+  // The hit is answered by `workspace list` alone — global by construction, so
+  // it can't be defeated by `pane list` being scoped to the focused workspace.
+  expect(calls[0]).toEqual(["workspace", "list"]);
+});
+
+test("focus and close act on the workspace, taking every tab with them", () => {
+  const { run, calls } = fakeHerdr();
+  const h = createHerdrBackend({ run, env: IN_HERDR });
+  h.focusWindow("w1");
+  h.killWindow("w1");
+  expect(calls).toEqual([["workspace", "focus", "w1"], ["workspace", "close", "w1"]]);
+});
+
+test("herdr's own agent states are translated, and `unknown` is left to the scraper", () => {
+  const ws = reply("workspace_list", {
+    workspaces: ["a", "b", "c", "d", "e"].map((k) => ({ workspace_id: k, tokens: { orbit_wt: `/wt/${k}` } })),
+  });
+  const panes = reply("pane_list", {
     panes: [
-      // Screen-detected: a name, but no official session reference.
-      { pane_id: "a", tokens: { orbit_role: "claude", orbit_wt: "/wt/a" }, agent: "claude-code" },
-      // herdr knows nothing at all about this one.
-      { pane_id: "b", tokens: { orbit_role: "claude", orbit_wt: "/wt/b" }, agent_status: "unknown" },
+      { pane_id: "pa", workspace_id: "a", tokens: { orbit_role: "claude" }, agent_status: "working" },
+      { pane_id: "pb", workspace_id: "b", tokens: { orbit_role: "claude" }, agent_status: "blocked" },
+      { pane_id: "pc", workspace_id: "c", tokens: { orbit_role: "claude" }, agent_status: "idle" },
+      { pane_id: "pd", workspace_id: "d", tokens: { orbit_role: "claude" }, agent_status: "done" },
+      { pane_id: "pe", workspace_id: "e", tokens: { orbit_role: "claude" }, agent_status: "unknown" },
+      // Not an agent pane — never reported, whatever herdr thinks of it.
+      { pane_id: "pf", workspace_id: "a", tokens: { orbit_role: "diff" }, agent_status: "working" },
     ],
   });
-  const { run } = fakeHerdr([[is("pane", "list"), payload]]);
-  const panes = createHerdrBackend({ run, env: IN_HERDR }).listTaggedPanes();
+  const { run } = fakeHerdr([[is("workspace", "list"), ws], [is("pane", "list"), panes]]);
+  expect(createHerdrBackend({ run, env: IN_HERDR }).nativeAgentStates()).toEqual({
+    "/wt/a": "busy",
+    "/wt/b": "blocked",
+    "/wt/c": "awaiting",
+    "/wt/d": "awaiting",
+  });
+});
 
-  expect(panes.find((p) => p.pane === "a").command).toBe("claude-code");
-  expect(panes.find((p) => p.pane === "b").command).toBeTruthy();
+// herdr's docs never say whether `pane list` is global or scoped to the focused
+// workspace. If it's scoped, a global call returns nothing of ours even though
+// `workspace list` found our workspaces — so fall back to asking each one.
+test("a workspace-scoped `pane list` is detected and worked around", () => {
+  const scopedTo = {
+    w1: reply("pane_list", { panes: [{ pane_id: "w1:p9", workspace_id: "w1", tokens: { orbit_role: "claude" } }] }),
+    w2: reply("pane_list", { panes: [{ pane_id: "w2:p9", workspace_id: "w2", tokens: { orbit_role: "claude" } }] }),
+  };
+  const calls = [];
+  const run = (args) => {
+    calls.push(args);
+    if (is("workspace", "list")(args)) return { status: 0, stdout: WS_LIST, stderr: "" };
+    if (is("pane", "list")(args)) {
+      const i = args.indexOf("--workspace");
+      // Unscoped: this server only ever shows the focused workspace, which here
+      // holds nothing of ours.
+      if (i < 0) return { status: 0, stdout: reply("pane_list", { panes: [] }), stderr: "" };
+      return { status: 0, stdout: scopedTo[args[i + 1]] || "", stderr: "" };
+    }
+    return { status: 0, stdout: "", stderr: "" };
+  };
+
+  const panes = createHerdrBackend({ run, env: IN_HERDR }).listTaggedPanes();
+  expect(panes.map((p) => p.worktreePath).sort()).toEqual(["/wt/feature", "/wt/other"]);
+  expect(calls.filter((c) => c.includes("--workspace"))).toHaveLength(2);
+});
+
+test("a global `pane list` is not re-queried per workspace", () => {
+  const { run, calls } = world();
+  createHerdrBackend({ run, env: IN_HERDR }).listTaggedPanes();
+  expect(calls.filter((c) => c[1] === "list" && c.includes("--workspace"))).toHaveLength(0);
+});
+
+// ---- placing a pane when tokens don't round-trip ----
+
+test("a pane placeable only by hash is still findable, just not glyphable", () => {
+  const wt = "/wt/feature";
+  const ws = reply("workspace_list", { workspaces: [{ workspace_id: "w1", tokens: { orbit_wtkey: sessionKey(wt) } }] });
+  const panes = reply("pane_list", {
+    panes: [{ pane_id: "w1:p9", workspace_id: "w1", agent_status: "working", tokens: { orbit_role: "claude" } }],
+  });
+  const { run } = fakeHerdr([[is("workspace", "list"), ws], [is("pane", "list"), panes]]);
+  const h = createHerdrBackend({ run, env: IN_HERDR, resolveKey: () => null });
+
+  expect(h.findWindowByWorktree(wt)).toBe("w1"); // matched on the hash
+  expect(h.listTaggedPanes()[0].worktreePath).toBe("");
+  expect(h.nativeAgentStates()).toEqual({}); // no path to key a glyph on
 });
 
 test("a worktree path that didn't survive as a token resolves through its hash", () => {
-  const payload = JSON.stringify({
-    panes: [{ pane_id: "w1:p2", tab_id: "t1", tokens: { orbit_role: "claude", orbit_wtkey: "abc123" } }],
+  const ws = reply("workspace_list", { workspaces: [{ workspace_id: "w1", tokens: { orbit_wtkey: "abc123" } }] });
+  const panes = reply("pane_list", {
+    panes: [{ pane_id: "w1:p9", workspace_id: "w1", tokens: { orbit_role: "claude" } }],
   });
-  const { run } = fakeHerdr([[is("pane", "list"), payload]]);
+  const { run } = fakeHerdr([[is("workspace", "list"), ws], [is("pane", "list"), panes]]);
   const h = createHerdrBackend({
     run,
     env: IN_HERDR,
@@ -137,184 +220,225 @@ test("a worktree path that didn't survive as a token resolves through its hash",
   expect(h.listTaggedPanes()[0].worktreePath).toBe("/wt/feature");
 });
 
-// If a long slash-bearing path turns out not to survive as a token value, the
-// 16-hex-char hash still identifies the worktree. Losing the agent glyph is
-// survivable; losing the ability to focus, close, or clean up a review is not.
-test("a pane placeable only by hash is still findable, just not glyphable", () => {
-  const wt = "/wt/feature";
-  const payload = JSON.stringify({
-    panes: [{
-      pane_id: "w1:p2", tab_id: "t1", agent_status: "working",
-      tokens: { orbit_role: "claude", orbit_wtkey: sessionKey(wt) },
-    }],
-  });
-  const { run } = fakeHerdr([[is("pane", "list"), payload]]);
-  const h = createHerdrBackend({ run, env: IN_HERDR, resolveKey: () => null });
-
-  expect(h.findWindowByWorktree(wt)).toBe("t1"); // matched on the hash
-  expect(h.listTaggedPanes()[0].worktreePath).toBe("");
-  expect(h.nativeAgentStates()).toEqual({}); // no path to key a glyph on
-});
-
-test("a pane with no worktree token at all is dropped", () => {
-  const payload = JSON.stringify({
-    panes: [{ pane_id: "w1:p2", tokens: { orbit_role: "claude" } }],
-  });
-  const { run } = fakeHerdr([[is("pane", "list"), payload]]);
+test("a pane with no worktree anywhere is dropped", () => {
+  const { run } = fakeHerdr([
+    [is("workspace", "list"), reply("workspace_list", { workspaces: [] })],
+    [is("pane", "list"), reply("pane_list", { panes: [{ pane_id: "p", tokens: { orbit_role: "claude" } }] })],
+  ]);
   expect(createHerdrBackend({ run, env: IN_HERDR }).listTaggedPanes()).toEqual([]);
 });
+
+// ---- finding tokens at all ----
 
 // The field tokens arrive in is undocumented, and the one real payload we have
 // is from an untagged pane so it doesn't reveal one. Guessing wrong would mean
-// no pane is ever found — the whole backend dead. So the lookup searches
-// instead of guessing.
+// no pane or workspace is ever found — the whole backend dead. So it searches.
 test("tokens are found wherever herdr puts them", () => {
-  const tokens = { orbit_role: "claude", orbit_wt: "/wt/a" };
+  const tokens = { orbit_wt: "/wt/a" };
   const shapes = [
-    { pane_id: "p", tokens },                                  // the guess
-    { pane_id: "p", metadata: { tokens } },                    // one level down
-    { pane_id: "p", metadata: tokens },                        // no inner "tokens"
-    { pane_id: "p", metadata: { "orbit-diff": { tokens } } },  // namespaced by source
-    { pane_id: "p", reported: { by_source: { "orbit-diff": tokens } } }, // unguessable
+    { workspace_id: "w1", tokens },
+    { workspace_id: "w1", metadata: { tokens } },
+    { workspace_id: "w1", metadata: tokens },
+    { workspace_id: "w1", metadata: { "orbit-diff": { tokens } } },
+    { workspace_id: "w1", reported: { by_source: { "orbit-diff": tokens } } },
     // Values as { value, expires_at } records rather than bare strings.
-    { pane_id: "p", tokens: { orbit_role: { value: "claude" }, orbit_wt: { value: "/wt/a" } } },
+    { workspace_id: "w1", tokens: { orbit_wt: { value: "/wt/a" } } },
   ];
-  for (const pane of shapes) {
-    const { run } = fakeHerdr([[is("pane", "list"), JSON.stringify({ panes: [pane] })]]);
-    const found = createHerdrBackend({ run, env: IN_HERDR }).listTaggedPanes();
-    expect(found).toHaveLength(1);
-    expect(found[0].worktreePath).toBe("/wt/a");
+  for (const workspace of shapes) {
+    const { run } = fakeHerdr([[is("workspace", "list"), reply("workspace_list", { workspaces: [workspace] })]]);
+    expect(createHerdrBackend({ run, env: IN_HERDR }).findWindowByWorktree("/wt/a")).toBe("w1");
   }
 });
 
-test("an unrelated pane's own metadata is not mistaken for ours", () => {
-  const payload = JSON.stringify({
-    panes: [{ pane_id: "p", tab_id: "t", metadata: { tokens: { build: "green", pid: "412" } } }],
-  });
-  const { run } = fakeHerdr([[is("pane", "list"), payload]]);
-  expect(createHerdrBackend({ run, env: IN_HERDR }).listTaggedPanes()).toEqual([]);
+test("someone else's metadata is not mistaken for ours", () => {
+  const { run } = fakeHerdr([
+    [is("workspace", "list"), reply("workspace_list", {
+      workspaces: [{ workspace_id: "w1", metadata: { tokens: { build: "green", pid: "412" } } }],
+    })],
+    [is("pane", "list"), reply("pane_list", { panes: [] })],
+  ]);
+  expect(createHerdrBackend({ run, env: IN_HERDR }).findWindowByWorktree("/wt/a")).toBe(null);
 });
 
-test("findWindowByWorktree returns the tab holding that worktree's panes", () => {
-  const { run } = fakeHerdr([[is("pane", "list"), PANE_LIST]]);
-  const h = createHerdrBackend({ run, env: IN_HERDR });
-  expect(h.findWindowByWorktree("/wt/other")).toBe("t2");
-  expect(h.findWindowByWorktree("/wt/nothing-here")).toBe(null);
-});
-
-test("herdr's own agent states are translated, and `unknown` is left to the scraper", () => {
-  const payload = JSON.stringify({
-    panes: [
-      { pane_id: "a", tokens: { orbit_role: "claude", orbit_wt: "/wt/a" }, agent_status: "working" },
-      { pane_id: "b", tokens: { orbit_role: "claude", orbit_wt: "/wt/b" }, agent_status: "blocked" },
-      { pane_id: "c", tokens: { orbit_role: "claude", orbit_wt: "/wt/c" }, agent_status: "idle" },
-      { pane_id: "d", tokens: { orbit_role: "claude", orbit_wt: "/wt/d" }, agent_status: "done" },
-      { pane_id: "e", tokens: { orbit_role: "claude", orbit_wt: "/wt/e" }, agent_status: "unknown" },
-      // Not the agent pane — never reported, whatever herdr thinks of it.
-      { pane_id: "f", tokens: { orbit_role: "diff", orbit_wt: "/wt/a" }, agent_status: "working" },
-    ],
-  });
-  const { run } = fakeHerdr([[is("pane", "list"), payload]]);
-  const h = createHerdrBackend({ run, env: IN_HERDR });
-
-  expect(h.nativeAgentStates()).toEqual({
-    "/wt/a": "busy",
-    "/wt/b": "blocked",
-    "/wt/c": "awaiting",
-    "/wt/d": "awaiting",
-  });
-});
+// ---- input and output ----
 
 test("sendLine types the text and submits it as a separate key", () => {
   const { run, calls } = fakeHerdr();
-  const h = createHerdrBackend({ run, env: IN_HERDR });
-
-  expect(h.sendLine("w1:p2", "apply the change requests")).toBe(true);
+  expect(createHerdrBackend({ run, env: IN_HERDR }).sendLine("w1:p9", "apply the change requests")).toBe(true);
   expect(calls).toEqual([
-    ["pane", "send-text", "w1:p2", "apply the change requests"],
-    ["pane", "send-keys", "w1:p2", "enter"],
+    ["pane", "send-text", "w1:p9", "apply the change requests"],
+    ["pane", "send-keys", "w1:p9", "enter"],
   ]);
 });
 
 test("sendLine doesn't press enter if the text never landed", () => {
   const { run, calls } = fakeHerdr([[is("pane", "send-text"), "", 1]]);
-  const h = createHerdrBackend({ run, env: IN_HERDR });
-
-  expect(h.sendLine("w1:p2", "hello")).toBe(false);
+  expect(createHerdrBackend({ run, env: IN_HERDR }).sendLine("w1:p9", "hello")).toBe(false);
   expect(calls).toHaveLength(1);
 });
 
 test("capturePane reads the visible viewport, and reports a dead pane as null", () => {
   const alive = fakeHerdr([[is("pane", "read"), "· Tempering… (1m 26s)\n"]]);
   const h = createHerdrBackend({ run: alive.run, env: IN_HERDR });
-  expect(h.capturePane("w1:p2")).toBe("· Tempering… (1m 26s)\n");
-  expect(alive.calls[0]).toEqual(["pane", "read", "w1:p2", "--source", "visible", "--format", "text"]);
+  expect(h.capturePane("w1:p9")).toBe("· Tempering… (1m 26s)\n");
+  expect(alive.calls[0]).toEqual(["pane", "read", "w1:p9", "--source", "visible", "--format", "text"]);
 
   const dead = fakeHerdr([[is("pane", "read"), "", 1]]);
-  expect(createHerdrBackend({ run: dead.run, env: IN_HERDR }).capturePane("w1:p2")).toBe(null);
+  expect(createHerdrBackend({ run: dead.run, env: IN_HERDR }).capturePane("w1:p9")).toBe(null);
 });
 
-test("buildReviewWindow lays out four panes and seeds each one's command", () => {
-  let split = 0;
-  const { run, calls } = fakeHerdr([
-    [is("tab", "create"), JSON.stringify({ tab_id: "t9", pane_id: "w9:p1" })],
-    [is("pane", "split"), null], // handled below
-  ]);
-  // The canned-route fake can't vary per split, so wrap it with a counter.
-  const ids = ["w9:diff", "w9:claude", "w9:setup"];
-  const counting = (args) => {
-    if (args[0] === "pane" && args[1] === "split") {
-      calls.push(args);
-      return { status: 0, stdout: JSON.stringify({ pane_id: ids[split++] }), stderr: "" };
-    }
-    return run(args);
-  };
+// `command` exists so agent-state.mjs can skip a pane whose REPL exited and left
+// a bare shell. herdr can't answer that, and `agent_session` is NOT a stand-in:
+// it's populated only when an official integration reported a native session, so
+// a live screen-detected agent has none. Deriving `command` from it would make
+// the scraper skip exactly the panes that most need scraping.
+test("a pane herdr can't identify still reports a command, so it gets scraped", () => {
+  const ws = reply("workspace_list", {
+    workspaces: [
+      { workspace_id: "a", tokens: { orbit_wt: "/wt/a" } },
+      { workspace_id: "b", tokens: { orbit_wt: "/wt/b" } },
+    ],
+  });
+  const panes = reply("pane_list", {
+    panes: [
+      // Screen-detected: a name, but no official session reference.
+      { pane_id: "pa", workspace_id: "a", tokens: { orbit_role: "claude" }, agent: "claude-code" },
+      // herdr knows nothing at all about this one.
+      { pane_id: "pb", workspace_id: "b", tokens: { orbit_role: "claude" }, agent_status: "unknown" },
+    ],
+  });
+  const { run } = fakeHerdr([[is("workspace", "list"), ws], [is("pane", "list"), panes]]);
+  const found = createHerdrBackend({ run, env: IN_HERDR }).listTaggedPanes();
+  expect(found.find((p) => p.pane === "pa").command).toBe("claude-code");
+  expect(found.find((p) => p.pane === "pb").command).toBeTruthy();
+});
 
-  const h = createHerdrBackend({ run: counting, env: IN_HERDR });
-  const built = h.buildReviewWindow({
+// ---- building a review workspace ----
+
+// Creates a workspace whose pane is w5:p1, and hands out fresh ids for each
+// split and tab so the layout can be asserted.
+function buildingHerdr({ focusedAfter = null } = {}) {
+  let n = 0;
+  const calls = [];
+  const run = (args) => {
+    calls.push(args);
+    if (is("workspace", "create")(args)) {
+      return { status: 0, stdout: reply("workspace_create", { workspace_id: "w5", pane_id: "w5:p1" }), stderr: "" };
+    }
+    if (args[1] === "split") return { status: 0, stdout: reply("pane_split", { pane_id: `w5:s${++n}` }), stderr: "" };
+    if (is("tab", "create")(args)) {
+      n++;
+      return { status: 0, stdout: reply("tab_create", { tab_id: `w5:t${n}`, pane_id: `w5:t${n}p` }), stderr: "" };
+    }
+    if (args[1] === "get" && focusedAfter !== null) {
+      return { status: 0, stdout: reply("pane_get", { pane_id: "w1:p1", focused: focusedAfter }), stderr: "" };
+    }
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  return { run, calls };
+}
+
+test("a review is a workspace of three tabs: review, claude, codex", () => {
+  const { run, calls } = buildingHerdr();
+  const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({
     worktreePath: "/wt/feature",
     name: "feature",
     statusCmd: "orbit-diff pr-status",
     setupCmd: "make setup",
-    claudeCmd: "claude",
     diffCmd: "orbit-diff",
+    claudeCmd: "claude",
+    codexCmd: "codex",
   });
 
   expect(built.error).toBeUndefined();
-  expect(built.window).toBe("t9");
-  // The tab's original pane stays top-left as `status`; everything else is
-  // created by a split, in the order diff → claude → setup.
-  expect(built.panes).toEqual({
-    status: "w9:p1",
-    setup: "w9:setup",
-    claude: "w9:claude",
-    diff: "w9:diff",
-  });
+  expect(built.window).toBe("w5"); // the workspace
+  expect(Object.keys(built.panes).sort()).toEqual(["claude", "codex", "diff", "setup", "status"]);
 
-  // Nothing focuses anything. herdr's default is to leave focus alone and
-  // `--focus` "selects the new layout" — which could pull the user out of the
-  // PR list, breaking the promise that reviews open in the background.
-  expect(calls[0]).toContain("--no-focus");
+  // Tab 1 is the workspace's original pane, split twice: overview keeps the
+  // top-left, the diff viewer takes the right-hand 70% at full height, setup
+  // sits under overview.
   const splits = calls.filter((c) => c[1] === "split");
-  expect(splits).toHaveLength(3);
-  for (const split of splits) {
-    expect(split).toContain("--no-focus");
-    expect(split).not.toContain("--focus");
-  }
+  expect(splits).toHaveLength(2);
+  expect(splits[0]).toContain("right");
+  expect(splits[1]).toContain("down");
+  for (const s of splits) expect(s[2]).toBe("w5:p1"); // both split the overview pane
 
-  // Every pane is tagged with its role and its worktree.
-  const tags = calls.filter((c) => c[1] === "report-metadata");
-  expect(tags).toHaveLength(4);
-  for (const t of tags) expect(t).toContain("orbit_wt=/wt/feature");
+  // Tabs 2 and 3 are whole tabs in the same workspace, one agent each.
+  const tabs = calls.filter((c) => is("tab", "create")(c));
+  expect(tabs).toHaveLength(2);
+  expect(tabs.map((t) => t[t.indexOf("--label") + 1])).toEqual(["claude", "codex"]);
+  for (const t of tabs) expect(t[t.indexOf("--workspace") + 1]).toBe("w5");
 
-  // And each one is given its command.
+  // Every command lands in the right place.
   const ran = calls.filter((c) => c[1] === "run").map((c) => [c[2], c[3]]);
   expect(ran).toEqual([
-    ["w9:p1", "orbit-diff pr-status"],
-    ["w9:setup", "make setup"],
-    ["w9:claude", "claude"],
-    ["w9:diff", "orbit-diff"],
+    [built.panes.status, "orbit-diff pr-status"],
+    [built.panes.setup, "make setup"],
+    [built.panes.diff, "orbit-diff"],
+    [built.panes.claude, "claude"],
+    [built.panes.codex, "codex"],
   ]);
+});
+
+test("nothing in the build focuses anything", () => {
+  const { run, calls } = buildingHerdr();
+  createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/x" });
+  for (const c of calls.filter((x) => x[1] === "create" || x[1] === "split")) {
+    expect(c).toContain("--no-focus");
+    expect(c).not.toContain("--focus");
+  }
+});
+
+// The workspace is the container, so tagging it is the one write that makes the
+// whole review findable. It has to happen before anything else can fail.
+test("the workspace is tagged before any step that could fail", () => {
+  const { run, calls } = buildingHerdr();
+  createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/feature" });
+
+  const tagIdx = calls.findIndex((c) => is("workspace", "report-metadata")(c));
+  const firstSplit = calls.findIndex((c) => c[1] === "split");
+  expect(tagIdx).toBeGreaterThan(-1);
+  expect(tagIdx).toBeLessThan(firstSplit);
+  expect(calls[tagIdx]).toContain("orbit_wt=/wt/feature");
+  expect(calls[tagIdx]).toContain(`orbit_wtkey=${sessionKey("/wt/feature")}`);
+  expect(calls[tagIdx].slice(3, 5)).toEqual(SOURCE);
+});
+
+test("a workspace abandoned mid-build is still findable, so it can be cleaned up", () => {
+  const calls = [];
+  const run = (args) => {
+    calls.push(args);
+    if (is("workspace", "create")(args)) {
+      return { status: 0, stdout: reply("workspace_create", { workspace_id: "w5", pane_id: "w5:p1" }), stderr: "" };
+    }
+    if (args[1] === "split") return { status: 1, stdout: "", stderr: "boom" };
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/x" });
+  expect(built.error).toBe("boom"); // herdr's own message, not one we invented
+  expect(built.window).toBe("w5"); // handed back so the caller can record it
+
+  // And the container tag went down first, so a later scan finds it.
+  const relist = fakeHerdr([[is("workspace", "list"), reply("workspace_list", {
+    workspaces: [{ workspace_id: "w5", tokens: { orbit_wt: "/wt/x" } }],
+  })]]);
+  expect(createHerdrBackend({ run: relist.run, env: IN_HERDR }).findWindowByWorktree("/wt/x")).toBe("w5");
+});
+
+test("a failed agent tab still reports the workspace for cleanup", () => {
+  const calls = [];
+  const run = (args) => {
+    calls.push(args);
+    if (is("workspace", "create")(args)) {
+      return { status: 0, stdout: reply("workspace_create", { workspace_id: "w5", pane_id: "w5:p1" }), stderr: "" };
+    }
+    if (args[1] === "split") return { status: 0, stdout: reply("pane_split", { pane_id: "w5:s1" }), stderr: "" };
+    if (is("tab", "create")(args)) return { status: 1, stdout: "", stderr: "no room" };
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/x" });
+  expect(built.error).toBeTruthy();
+  expect(built.window).toBe("w5");
 });
 
 test("buildReviewWindow refuses when we're not running inside herdr", () => {
@@ -324,131 +448,44 @@ test("buildReviewWindow refuses when we're not running inside herdr", () => {
   expect(calls).toEqual([]); // nothing was attempted
 });
 
-test("a failed split reports the error and hands back the tab so it can be cleaned up", () => {
-  const { run } = fakeHerdr([
-    [is("tab", "create"), JSON.stringify({ tab_id: "t9", pane_id: "w9:p1" })],
-    [is("pane", "split"), "", 1],
-  ]);
-  const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/x" });
-  expect(built.error).toMatch(/split/);
-  expect(built.window).toBe("t9");
-});
-
-// A tab is only findable through its panes' tokens, so a half-built one has to
-// be tagged before it can be abandoned — otherwise neither `d` nor `orbit-diff
-// reset` could ever close it, and it would sit there orphaned forever.
-test("a tab abandoned mid-build is still findable, so it can be cleaned up", () => {
-  const calls = [];
-  const run = (args) => {
-    calls.push(args);
-    if (args[0] === "tab") return { status: 0, stdout: JSON.stringify({ tab_id: "t9", pane_id: "w9:p1" }), stderr: "" };
-    if (args[1] === "split") return { status: 1, stdout: "", stderr: "boom" };
-    return { status: 0, stdout: "", stderr: "" };
-  };
-  const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/x" });
-  expect(built.error).toBeTruthy();
-
-  // The surviving pane carries the worktree tag, written before the split.
-  const tagged = calls.find((c) => c[1] === "report-metadata");
-  expect(tagged).toBeTruthy();
-  expect(tagged).toContain("orbit_wt=/wt/x");
-  expect(calls.indexOf(tagged)).toBeLessThan(calls.findIndex((c) => c[1] === "split"));
-
-  // And a later scan finds the tab through it.
-  const relist = fakeHerdr([[is("pane", "list"), JSON.stringify({
-    panes: [{ pane_id: "w9:p1", tab_id: "t9", tokens: { orbit_role: "status", orbit_wt: "/wt/x" } }],
-  })]]);
-  expect(createHerdrBackend({ run: relist.run, env: IN_HERDR }).findWindowByWorktree("/wt/x")).toBe("t9");
-});
-
 test("ORBIT_MUX=herdr counts as being inside herdr", () => {
   const { run } = fakeHerdr();
   expect(createHerdrBackend({ run, env: { ORBIT_MUX: "herdr" } }).inMux()).toBe(true);
 });
 
-test("a herdr that isn't answering reads as an empty world, not an exception", () => {
+test("an unreachable herdr reads as an empty world, not an exception", () => {
   const { run } = fakeHerdr([[() => true, "", 1]]);
   const h = createHerdrBackend({ run, env: IN_HERDR });
   expect(h.listTaggedPanes()).toEqual([]);
   expect(h.findWindowByWorktree("/wt/feature")).toBe(null);
   expect(h.paneAlive("w1:p1")).toBe(false);
   expect(h.nativeAgentStates()).toEqual({});
+  expect(h.openPlainWindow("/wt/x", "x").ok).toBe(false);
 });
 
-// The CLI's exact stdout envelope isn't pinned down in herdr's docs, so the
-// parser accepts the forms it could reasonably take rather than betting on one.
-test("pane list parses whether it comes back wrapped, bare, or as NDJSON", () => {
-  const pane = { pane_id: "w1:p2", tab_id: "t1", tokens: { orbit_role: "claude", orbit_wt: "/wt/a" } };
-  const shapes = [
-    JSON.stringify({ panes: [pane] }),
-    JSON.stringify([pane]),
-    JSON.stringify({ result: { panes: [pane] } }),
-    JSON.stringify(pane), // NDJSON, one row
-  ];
-  for (const stdout of shapes) {
-    const { run } = fakeHerdr([[is("pane", "list"), stdout]]);
-    const panes = createHerdrBackend({ run, env: IN_HERDR }).listTaggedPanes();
-    expect(panes).toHaveLength(1);
-    expect(panes[0].worktreePath).toBe("/wt/a");
-  }
-});
-
-test("an id printed bare, tmux-style, is accepted as well as a JSON one", () => {
-  let split = 0;
-  const run = (args) => {
-    if (args[0] === "tab") return { status: 0, stdout: "t9\n", stderr: "" };
-    if (args[0] === "pane" && args[1] === "list") {
-      return {
-        status: 0,
-        stdout: JSON.stringify({ panes: [{ pane_id: "w9:p1", tab_id: "t9" }] }),
-        stderr: "",
-      };
-    }
-    if (args[1] === "split") return { status: 0, stdout: `w9:p${++split + 1}\n`, stderr: "" };
-    return { status: 0, stdout: "", stderr: "" };
-  };
-  const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/x" });
-  expect(built.window).toBe("t9");
-  // `tab create` printed only the tab id, so the pane was found by listing.
-  expect(built.panes.status).toBe("w9:p1");
-  expect(built.panes.diff).toBe("w9:p2");
+test("a plain worktree gets a tagged single-pane workspace", () => {
+  const { run, calls } = buildingHerdr();
+  expect(createHerdrBackend({ run, env: IN_HERDR }).openPlainWindow("/wt/x", "x").ok).toBe(true);
+  expect(calls[0]).toContain("--focus"); // matches tmux's new-window, which selects it
+  expect(calls.some((c) => is("workspace", "report-metadata")(c) && c.includes("orbit_wt=/wt/x"))).toBe(true);
 });
 
 // ---- focus guard ----
 //
 // The background-review contract is the most disruptive thing this backend can
 // get wrong, and `--no-focus` has never been verified against a live server.
-// PaneInfo carries `focused`, so building a review tab checks rather than trusts.
+// PaneInfo carries `focused`, so building a review checks rather than trusts.
 
 const IN_HERDR_FULL = { HERDR_PANE_ID: "w1:p1", HERDR_TAB_ID: "w1:t1" };
 
-// A fake that builds a tab successfully and answers `pane get` with `focused`.
-function buildingHerdr(focusedAfter) {
-  const calls = [];
-  const run = (args) => {
-    calls.push(args);
-    if (args[0] === "tab" && args[1] === "create") {
-      return { status: 0, stdout: JSON.stringify({ result: { tab_id: "w1:t9", pane_id: "w1:p9" } }), stderr: "" };
-    }
-    if (args[1] === "split") {
-      return { status: 0, stdout: JSON.stringify({ result: { pane_id: `w1:s${calls.length}` } }), stderr: "" };
-    }
-    if (args[1] === "get") {
-      return { status: 0, stdout: JSON.stringify({ result: { pane_id: "w1:p1", focused: focusedAfter } }), stderr: "" };
-    }
-    return { status: 0, stdout: "", stderr: "" };
-  };
-  return { run, calls };
-}
-
-test("if building a review tab stole focus, the view is put back", () => {
-  const { run, calls } = buildingHerdr(false);
+test("if building a review stole focus, the view is put back", () => {
+  const { run, calls } = buildingHerdr({ focusedAfter: false });
   createHerdrBackend({ run, env: IN_HERDR_FULL }).buildReviewWindow({ worktreePath: "/wt/x" });
-  expect(calls.some((c) => c[0] === "tab" && c[1] === "focus" && c[2] === "w1:t1")).toBe(true);
+  expect(calls.some((c) => is("tab", "focus", "w1:t1")(c))).toBe(true);
 });
 
 test("if focus never moved, nothing is refocused", () => {
-  const { run, calls } = buildingHerdr(true);
+  const { run, calls } = buildingHerdr({ focusedAfter: true });
   createHerdrBackend({ run, env: IN_HERDR_FULL }).buildReviewWindow({ worktreePath: "/wt/x" });
   expect(calls.some((c) => c[1] === "focus")).toBe(false);
 });
@@ -457,11 +494,12 @@ test("when herdr won't say whether we're focused, the view is left alone", () =>
   const calls = [];
   const run = (args) => {
     calls.push(args);
-    if (args[0] === "tab" && args[1] === "create") {
-      return { status: 0, stdout: JSON.stringify({ result: { tab_id: "w1:t9", pane_id: "w1:p9" } }), stderr: "" };
+    if (is("workspace", "create")(args)) {
+      return { status: 0, stdout: reply("workspace_create", { workspace_id: "w5", pane_id: "w5:p1" }), stderr: "" };
     }
-    if (args[1] === "split") return { status: 0, stdout: JSON.stringify({ result: { pane_id: "w1:s1" } }), stderr: "" };
-    if (args[1] === "get") return { status: 1, stdout: "", stderr: "nope" }; // no answer
+    if (args[1] === "split") return { status: 0, stdout: reply("pane_split", { pane_id: "w5:s1" }), stderr: "" };
+    if (is("tab", "create")(args)) return { status: 0, stdout: reply("tab_create", { pane_id: "w5:tp" }), stderr: "" };
+    if (args[1] === "get") return { status: 1, stdout: "", stderr: "nope" };
     return { status: 0, stdout: "", stderr: "" };
   };
   createHerdrBackend({ run, env: IN_HERDR_FULL }).buildReviewWindow({ worktreePath: "/wt/x" });
@@ -469,7 +507,7 @@ test("when herdr won't say whether we're focused, the view is left alone", () =>
 });
 
 test("the guard is skipped entirely when herdr didn't export our tab id", () => {
-  const { run, calls } = buildingHerdr(false);
+  const { run, calls } = buildingHerdr({ focusedAfter: false });
   createHerdrBackend({ run, env: { HERDR_PANE_ID: "w1:p1" } }).buildReviewWindow({ worktreePath: "/wt/x" });
   expect(calls.some((c) => c[1] === "get" || c[1] === "focus")).toBe(false);
 });

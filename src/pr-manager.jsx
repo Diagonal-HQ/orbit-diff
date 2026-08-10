@@ -287,6 +287,8 @@ export async function runPrManager() {
     // should call `orbit-diff env-report` when the environment is ready.
     const setupCmd = renderCommand(config.pr.setup || config.pr.start, { ...target, path: wtPath }) || "";
     const claudeCmd = renderCommand(config.pr.claude, { ...target, path: wtPath }) || "claude";
+    // herdr only — it gets a tab of its own there, and the tmux layout ignores it.
+    const codexCmd = renderCommand(config.pr.codex, { ...target, path: wtPath }) || "";
 
     const built = buildReviewWindow({
       worktreePath: wtPath,
@@ -294,6 +296,7 @@ export async function runPrManager() {
       statusCmd: "orbit-diff pr-status",
       setupCmd,
       claudeCmd,
+      codexCmd,
       diffCmd: "orbit-diff",
     });
     if (built.error) {

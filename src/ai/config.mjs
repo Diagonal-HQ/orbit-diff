@@ -43,7 +43,10 @@ export const DEFAULTS = {
   //   setup   — runs in the top-left pane inside the fresh worktree (build env,
   //             deps, etc). Report the provisioned instance back to orbit-diff
   //             with `orbit-diff env-report <instance>` as its last step.
-  //   claude  — runs in the top-right pane (default `claude`).
+  //   claude  — the Claude CLI (default `claude`). Under tmux it runs in the
+  //             top-right pane; under herdr it gets a tab of its own.
+  //   codex   — a second agent CLI (default `codex`), given its own tab.
+  //             herdr only: the tmux layout has no room for it.
   //   done    — YOUR env teardown when you finish (destroy the instance, etc.).
   //             orbit-diff always removes the git worktree itself, after `done`
   //             runs — so `done` only needs your custom teardown, not worktree
@@ -56,6 +59,7 @@ export const DEFAULTS = {
     start: "",
     setup: "",
     claude: "claude",
+    codex: "codex",
     done: "",
     worktreeDir: "",
     worktreeRefreshMinutes: 2,
@@ -95,7 +99,8 @@ export default {
     setup: "", //  e.g. "make dev-env {branch}" — runs in the top-left pane inside
     //             the new worktree. End it with \`orbit-diff env-report <instance>\`
     //             so orbit-diff can track the provisioned environment.
-    claude: "claude", // command run in the top-right pane
+    claude: "claude", // the Claude CLI — top-right pane (tmux) or its own tab (herdr)
+    codex: "codex", //  a second agent, in its own tab. herdr only
     done: "", //   e.g. "tear-down {branch}" — YOUR env teardown; orbit-diff always
     //             removes the git worktree itself afterwards
     worktreeDir: "", // where worktrees go; tokens {repo} {branch} {base} {number},
@@ -168,6 +173,9 @@ export async function loadConfig() {
   merged.pr.start = typeof merged.pr.start === "string" ? merged.pr.start : "";
   merged.pr.setup = typeof merged.pr.setup === "string" ? merged.pr.setup : "";
   merged.pr.claude = typeof merged.pr.claude === "string" && merged.pr.claude.trim() ? merged.pr.claude : "claude";
+  // Unlike `claude`, an empty `codex` is meaningful: it leaves that tab as a
+  // plain shell for anyone who doesn't use a second agent.
+  merged.pr.codex = typeof merged.pr.codex === "string" ? merged.pr.codex : DEFAULTS.pr.codex;
   merged.pr.done = typeof merged.pr.done === "string" ? merged.pr.done : "";
   merged.pr.worktreeDir = typeof merged.pr.worktreeDir === "string" ? merged.pr.worktreeDir : "";
   const wtMin = Number(merged.pr.worktreeRefreshMinutes);

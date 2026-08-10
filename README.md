@@ -270,7 +270,8 @@ export default {
   // …model/provider settings…
   pr: {
     setup: "make dev-env {branch} && orbit-diff env-report $EV_INSTANCE",
-    claude: "claude",           // command run in the top-right pane
+    claude: "claude",           // top-right pane (tmux) or its own tab (herdr)
+    codex: "codex",             // a second agent in its own tab; herdr only
     done: "tear-down {branch}", // your env teardown; the worktree is removed for you
     worktreeDir: "",            // "" ⇒ sibling "<repo>-worktrees/<branch>"
     worktreeRefreshMinutes: 2,  // auto-refresh the worktrees pane (0 disables)
@@ -291,19 +292,38 @@ nothing to configure, and if you're in a tmux session nested inside a herdr pane
 it drives herdr, which is the one that owns the window it would build. Set
 `ORBIT_MUX=tmux|herdr` to force a backend.
 
-The two are equivalent for everything above, with a few differences worth
-knowing:
+**The review environment is shaped differently.** Under tmux a review is one
+window of four panes. Under herdr it's a **workspace of three tabs**:
+
+```
+tab 1 "review"   ┌ overview ┬──────────────────────┐
+                 ├──────────┤      orbit-diff      │
+                 │  setup   │                      │
+                 └──────────┴──────────────────────┘
+tab 2 "claude"   the Claude CLI, whole tab
+tab 3 "codex"    the Codex CLI, whole tab  (set `pr.codex`)
+```
+
+The agents get whole tabs because they're the things you sit in and talk to, and
+a 30%-wide column is a poor place to do that. Tab 1 keeps everything you only
+glance at, with the diff viewer given the full height of the tab. A workspace
+also means closing a review (`d`) takes any extra tabs you opened for that
+worktree with it, rather than orphaning them.
+
+`pr.codex` is herdr-only — the tmux layout has no room for a second agent.
+
+Other differences worth knowing:
 
 - **Agent state** is reported by herdr rather than scraped off the screen (see
   above) — more reliable, and it doesn't cost a pane read per tick.
 - **An agent that exits**, leaving a bare shell in its pane, loses its glyph
   under tmux (which can see the pane's foreground process) but reads as
   "waiting on you" under herdr, which exposes no equivalent.
-- **The status pane** is sized as a fraction of the review window under herdr,
-  where tmux pins it to exactly 8 rows. herdr's split API takes ratios only, so
-  on a short terminal that pane can clip where the tmux one wouldn't.
-- **The pane you land on** when you jump to a review window is the diff viewer
-  under tmux and the status pane under herdr. herdr can only focus panes
+- **The overview pane** is sized as a fraction of its column under herdr, where
+  tmux pins it to exactly 8 rows. herdr's split API takes ratios only, so on a
+  short terminal it can clip where the tmux one wouldn't.
+- **The pane you land on** when you jump to a review is the diff viewer under
+  tmux and the overview pane under herdr. herdr can only focus panes
   directionally, and the flags that would set it outright risk yanking you out
   of the PR list — not worth it to save one keystroke.
 - **Clipboard** needs no `set-clipboard` setting under herdr: it's the terminal
