@@ -61,9 +61,12 @@ function defaultRun(args) {
 }
 
 // herdr speaks newline-delimited JSON over its socket and the CLI is a thin
-// wrapper over it, but the CLI's exact envelope isn't pinned down in the docs.
-// Accept the three shapes it could plausibly print — one JSON value, NDJSON, or
-// a bare id — rather than guessing one and breaking on the others.
+// wrapper over it. A real reply looks like:
+//
+//   {"id":"cli:pane:list","result":{"panes":[…],"type":"pane_list"}}
+//
+// NDJSON and bare-id forms are still accepted below, since the docs don't
+// promise this shape is the only one.
 function parseJson(text) {
   const t = String(text || "").trim();
   if (!t) return null;
@@ -86,36 +89,51 @@ function parseJson(text) {
   return rows.length === 1 ? rows[0] : rows;
 }
 
-// Dig an array out of whatever wrapper came back: a bare array, `{panes:[…]}`,
-// or either of those under a `result`/`data` envelope.
-function pickArray(value, key) {
-  if (Array.isArray(value)) return value;
-  if (!value || typeof value !== "object") return [];
-  if (Array.isArray(value[key])) return value[key];
-  for (const envelope of ["result", "data"]) {
-    if (value[envelope]) {
-      const inner = pickArray(value[envelope], key);
-      if (inner.length) return inner;
-    }
+// Take the reply envelope off before looking at anything inside it.
+//
+// This MUST happen before any field lookup. The envelope's `id` is the *request*
+// id — "cli:tab:create", "cli:pane:list" — and several of the ids we want are
+// plausibly named `id` on the payload itself, so reading fields at the envelope
+// level would hand back "cli:tab:create" as a tab id and every later
+// `tab focus`/`tab close` would target nothing.
+function unwrap(value) {
+  let v = value;
+  // Bounded: an envelope nested deeper than this is not something we understand.
+  for (let i = 0; i < 4; i++) {
+    if (!v || typeof v !== "object" || Array.isArray(v)) break;
+    if (v.result && typeof v.result === "object") v = v.result;
+    else if (v.data && typeof v.data === "object") v = v.data;
+    else break;
   }
+  return v;
+}
+
+// Dig an array out of an unwrapped payload: a bare array or `{panes:[…]}`.
+function pickArray(value, key) {
+  const v = unwrap(value);
+  if (Array.isArray(v)) return v;
+  if (!v || typeof v !== "object") return [];
+  if (Array.isArray(v[key])) return v[key];
   // A single row printed on its own — what NDJSON collapses to when there's
-  // exactly one. An empty `{panes: []}` still returns [], because it carries the
-  // key; only an object that looks like an item itself gets wrapped.
-  if (!(key in value) && !("result" in value) && !("data" in value)) return [value];
+  // exactly one. An empty `{panes: []}` still returns [], because it carries
+  // the key; only an object that looks like an item itself gets wrapped.
+  if (!(key in v)) return [v];
   return [];
 }
 
-// First present value among `names`, searched through the same envelopes.
+// First present value among `names` on an unwrapped payload, descending into a
+// single named resource object (`{"result":{"pane":{…}}}`) if that's the shape.
 function pickField(value, names) {
-  if (!value || typeof value !== "object") return null;
+  const v = unwrap(value);
+  if (!v || typeof v !== "object") return null;
   for (const name of names) {
-    const v = value[name];
-    if (typeof v === "string" && v) return v;
-    if (typeof v === "number") return String(v);
+    const found = v[name];
+    if (typeof found === "string" && found) return found;
+    if (typeof found === "number") return String(found);
   }
-  for (const envelope of ["result", "data", "pane", "tab", "workspace"]) {
-    if (value[envelope]) {
-      const inner = pickField(value[envelope], names);
+  for (const resource of ["pane", "tab", "workspace"]) {
+    if (v[resource] && typeof v[resource] === "object") {
+      const inner = pickField(v[resource], names);
       if (inner) return inner;
     }
   }

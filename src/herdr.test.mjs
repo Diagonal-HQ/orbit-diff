@@ -25,11 +25,48 @@ function fakeHerdr(routes = []) {
 
 const is = (...prefix) => (args) => prefix.every((p, i) => args[i] === p);
 
+// Verbatim `herdr pane list` output from a real server (herdr in a plain shell,
+// one untagged pane). Everything below is written against invented payloads, so
+// this is the one fixture that proves the shape assumption itself.
+const REAL_PANE_LIST =
+  '{"id":"cli:pane:list","result":{"panes":[{"agent_status":"unknown","cwd":"/Users/owen",' +
+  '"focused":true,"foreground_cwd":"/Users/owen","pane_id":"w3:p1","revision":1,' +
+  '"scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":75},' +
+  '"tab_id":"w3:t1","terminal_id":"term_658b210bea59f3",' +
+  '"terminal_title":"owen@Owens-MacBook-Pro:~",' +
+  '"terminal_title_stripped":"owen@Owens-MacBook-Pro:~","workspace_id":"w3"}],' +
+  '"type":"pane_list"}}';
+
+test("real `herdr pane list` output parses, and an untagged pane is ignored", () => {
+  const { run } = fakeHerdr([[is("pane", "list"), REAL_PANE_LIST]]);
+  const h = createHerdrBackend({ run, env: IN_HERDR });
+  expect(h.listTaggedPanes()).toEqual([]);
+  expect(h.findWindowByWorktree("/Users/owen")).toBe(null);
+  expect(h.nativeAgentStates()).toEqual({});
+});
+
+// The reply envelope's `id` is the REQUEST id ("cli:tab:create"), not a
+// resource id. Reading fields before unwrapping `result` handed that string
+// back as the tab id, so every later `tab focus`/`tab close` targeted nothing.
+test("the envelope's request id is never mistaken for a resource id", () => {
+  const created = '{"id":"cli:tab:create","result":{"tab_id":"w3:t2","pane_id":"w3:p2","type":"tab_create"}}';
+  const split = '{"id":"cli:pane:split","result":{"pane_id":"w3:p9","type":"pane_split"}}';
+  const run = (args) => ({
+    status: 0,
+    stdout: args[0] === "tab" ? created : args[1] === "split" ? split : "",
+    stderr: "",
+  });
+  const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/x" });
+  expect(built.window).toBe("w3:t2");
+  expect(built.panes.status).toBe("w3:p2");
+});
+
 // One `pane list` payload with all four review panes tagged, in the shape the
 // socket API documents: pane_id / tab_id / agent_status / revision, plus the
 // metadata tokens we report.
 const PANE_LIST = JSON.stringify({
-  panes: [
+  id: "cli:pane:list",
+  result: { type: "pane_list", panes: [
     {
       pane_id: "w1:p1", tab_id: "t1", revision: 7,
       tokens: { orbit_role: "status", orbit_wt: "/wt/feature", orbit_wtkey: "abc123" },
@@ -46,7 +83,7 @@ const PANE_LIST = JSON.stringify({
     },
     // Untagged — someone else's pane. Must be ignored entirely.
     { pane_id: "w3:p1", tab_id: "t3", revision: 1 },
-  ],
+  ] },
 });
 
 test("listTaggedPanes maps herdr's pane list onto the tmux backend's contract", () => {
