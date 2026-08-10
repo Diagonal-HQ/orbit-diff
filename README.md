@@ -296,19 +296,19 @@ it drives herdr, which is the one that owns the window it would build. Set
 window of four panes. Under herdr it's a **workspace of three tabs**:
 
 ```
-tab 1 "review"   ┌ overview ┬──────────────────────┐
-                 ├──────────┤      orbit-diff      │
-                 │  setup   │                      │
-                 └──────────┴──────────────────────┘
+tab 1 "review"   ┌ overview ┬───── setup ─────┐
+                 ├──────────┴─────────────────┤
+                 │         orbit-diff         │
+                 └────────────────────────────┘
 tab 2 "claude"   the Claude CLI, whole tab
 tab 3 "codex"    the Codex CLI, whole tab  (set `pr.codex`)
 ```
 
 The agents get whole tabs because they're the things you sit in and talk to, and
 a 30%-wide column is a poor place to do that. Tab 1 keeps everything you only
-glance at, with the diff viewer given the full height of the tab. A workspace
-also means closing a review (`d`) takes any extra tabs you opened for that
-worktree with it, rather than orphaning them.
+glance at — a top row of overview and setup, with the diff viewer full-width
+underneath. A workspace also means closing a review (`d`) takes any extra tabs
+you opened for that worktree with it, rather than orphaning them.
 
 `pr.codex` is herdr-only — the tmux layout has no room for a second agent.
 

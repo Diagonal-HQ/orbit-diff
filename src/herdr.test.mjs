@@ -354,13 +354,13 @@ test("a review is a workspace of three tabs: review, claude, codex", () => {
   expect(built.window).toBe("w5"); // the workspace
   expect(Object.keys(built.panes).sort()).toEqual(["claude", "codex", "diff", "setup", "status"]);
 
-  // Tab 1 is the workspace's original pane, split twice: overview keeps the
-  // top-left, the diff viewer takes the right-hand 70% at full height, setup
-  // sits under overview.
+  // Tab 1 is the workspace's original pane, split twice. Order matters: the
+  // DOWN split has to come first so the diff viewer spans the full width —
+  // split the top row first and it would only ever be half as wide.
   const splits = calls.filter((c) => c[1] === "split");
   expect(splits).toHaveLength(2);
-  expect(splits[0]).toContain("right");
-  expect(splits[1]).toContain("down");
+  expect(splits[0]).toContain("down"); // diff, full width along the bottom
+  expect(splits[1]).toContain("right"); // then overview | setup across the top
   for (const s of splits) expect(s[2]).toBe("w5:p1"); // both split the overview pane
 
   // Tabs 2 and 3 are whole tabs in the same workspace, one agent each.

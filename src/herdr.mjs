@@ -530,10 +530,10 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
 
   // Build a worktree's review as its own herdr WORKSPACE of three tabs.
   //
-  //   tab 1 "review"  ┌ overview ┬──────────────────────┐
-  //                   ├──────────┤      orbit-diff      │
-  //                   │  setup   │                      │
-  //                   └──────────┴──────────────────────┘
+  //   tab 1 "review"  ┌ overview ┬─── setup ───┐
+  //                   ├──────────┴─────────────┤
+  //                   │       orbit-diff       │   (full width)
+  //                   └────────────────────────┘
   //   tab 2 "claude"  the Claude CLI, full tab
   //   tab 3 "codex"   the Codex CLI, full tab
   //
@@ -545,9 +545,9 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   // tabs you opened for that worktree with it.
   //
   // The agents get whole tabs rather than a pane each: they're the things you
-  // sit in and talk to, and a 30%-wide column is a poor place to do that.
-  // Tab 1 keeps everything you only glance at, with the diff viewer given the
-  // full height of the tab — it's the widest, tallest thing here for a reason.
+  // sit in and talk to, and a 30%-wide column is a poor place to do that. Tab 1
+  // keeps everything you only glance at: a top row of overview + setup, and the
+  // diff viewer full-width underneath, which is what a diff wants.
   //
   // Two constraints from herdr's split API shape this:
   //   * splits go only `right` and `down`, never tmux's `-b`, so the tab's
@@ -577,25 +577,27 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     if (!overviewPane) return { error: "couldn't parse the herdr pane id", window };
     tag(overviewPane, "status", worktreePath);
 
-    // Tab 1, split 1: give the diff viewer the right-hand 70%, full height.
-    const right = run([
-      "pane", "split", overviewPane, "--direction", "right", "--ratio", "0.30",
-      "--cwd", worktreePath, "--no-focus",
-    ]);
-    if (right.status !== 0) return { error: (right.stderr || "herdr pane split failed").trim(), window };
-    const diffPane = idFrom(right.stdout, ["pane_id", "id"], { bare: true });
-    if (!diffPane) return { error: "couldn't parse the herdr pane id", window };
-    tag(diffPane, "diff", worktreePath);
-
-    // Tab 1, split 2: stack setup under overview in the left column. Overview is
-    // ~8 lines of branch/PR/check state; setup is a script that scrolls, so it
-    // gets the larger share.
+    // Tab 1, split 1: the diff viewer takes the bottom two thirds, full width.
+    // Splitting the untouched pane first is what makes it span the whole tab —
+    // do it after the top row exists and it would only ever be half as wide.
     const below = run([
-      "pane", "split", overviewPane, "--direction", "down", "--ratio", "0.35",
+      "pane", "split", overviewPane, "--direction", "down", "--ratio", "0.33",
       "--cwd", worktreePath, "--no-focus",
     ]);
     if (below.status !== 0) return { error: (below.stderr || "herdr pane split failed").trim(), window };
-    const setupPane = idFrom(below.stdout, ["pane_id", "id"], { bare: true });
+    const diffPane = idFrom(below.stdout, ["pane_id", "id"], { bare: true });
+    if (!diffPane) return { error: "couldn't parse the herdr pane id", window };
+    tag(diffPane, "diff", worktreePath);
+
+    // Tab 1, split 2: divide that top row — overview on the left, setup on the
+    // right. Setup gets the larger share: it's build output that wraps badly
+    // when narrow, where the overview is a handful of short status lines.
+    const right = run([
+      "pane", "split", overviewPane, "--direction", "right", "--ratio", "0.40",
+      "--cwd", worktreePath, "--no-focus",
+    ]);
+    if (right.status !== 0) return { error: (right.stderr || "herdr pane split failed").trim(), window };
+    const setupPane = idFrom(right.stdout, ["pane_id", "id"], { bare: true });
     if (!setupPane) return { error: "couldn't parse the herdr pane id", window };
     tag(setupPane, "setup", worktreePath);
 
