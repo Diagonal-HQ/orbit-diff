@@ -15,7 +15,7 @@ import { listWorktrees } from "./git.mjs";
 import { renderPath } from "./pr.mjs";
 import { orbitDirFor, pathSlug } from "./paths.mjs";
 import { deleteSession, listSessions, sessionKey } from "./session.mjs";
-import { findWindowByWorktree, killWindow } from "./mux.mjs";
+import { closeWorktreeWindow } from "./mux.mjs";
 
 function runGit(cwd, args) {
   return spawnSync("git", ["-C", cwd, ...args], {
@@ -34,8 +34,7 @@ const DEFAULT_DEPS = {
   listSessions,
   deleteSession,
   sessionKey,
-  findWindowByWorktree,
-  killWindow,
+  closeWorktreeWindow,
   orbitDirFor,
   existsSync,
   removeDir,
@@ -139,9 +138,12 @@ export async function resetBranch(rawBranch, overrides = {}) {
   const removedState = [];
   const errors = [];
 
+  // Sweeps both multiplexers rather than the one we're inside — reset is
+  // normally run from a plain shell, and it must not leave a live window behind
+  // after removing the worktree out from under it.
   for (const path of paths) {
-    const window = deps.findWindowByWorktree(path);
-    if (window && deps.killWindow(window)) removedWindows.push(window);
+    const window = deps.closeWorktreeWindow(path);
+    if (window) removedWindows.push(window);
   }
 
   const registeredPaths = new Set(registered.map((wt) => resolve(wt.path)));

@@ -48,10 +48,10 @@ test("resetBranch removes worktrees, the local branch, and all matching state", 
       deletedSessions.push(key);
       return true;
     },
-    findWindowByWorktree: (path) => (path === worktree ? "@7" : null),
-    killWindow: (window) => {
-      killedWindows.push(window);
-      return true;
+    closeWorktreeWindow: (path) => {
+      if (path !== worktree) return null;
+      killedWindows.push("@7");
+      return "@7";
     },
     orbitDirFor: (root, branch) => `${root}/state/${branch}`,
     existsSync: (path) => existing.has(path),
@@ -107,7 +107,7 @@ test("resetBranch does not target an unregistered shared worktree path", async (
     loadConfig: async () => ({ pr: { worktreeDir: "/env/shared" } }),
     listWorktrees: () => [{ path: "/repos/widgets", branch: "main", bare: false }],
     listSessions: () => [],
-    findWindowByWorktree: () => null,
+    closeWorktreeWindow: () => null,
     orbitDirFor: (root, branch) => `${root}/state/${branch}`,
     existsSync: () => false,
     removeDir: (path) => removed.push(path),

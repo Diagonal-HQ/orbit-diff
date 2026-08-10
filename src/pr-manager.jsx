@@ -326,7 +326,11 @@ export async function runPrManager() {
 
     let killed = false;
     if (path) {
-      const win = findWindowByWorktree(path);
+      // Normally found by its panes' worktree tag. The session's recorded id is
+      // the fallback for a window that was created but never fully tagged —
+      // a review build that died between opening the window and stamping it.
+      // Without this, that window would be unclosable by any route.
+      const win = findWindowByWorktree(path) || sessionForWorktree(path)?.window;
       if (win) killed = killWindow(win);
     }
 

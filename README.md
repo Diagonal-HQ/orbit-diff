@@ -291,16 +291,27 @@ nothing to configure, and if you're in a tmux session nested inside a herdr pane
 it drives herdr, which is the one that owns the window it would build. Set
 `ORBIT_MUX=tmux|herdr` to force a backend.
 
-The two are equivalent for everything above, with three differences worth
+The two are equivalent for everything above, with a few differences worth
 knowing:
 
 - **Agent state** is reported by herdr rather than scraped off the screen (see
   above) — more reliable, and it doesn't cost a pane read per tick.
+- **An agent that exits**, leaving a bare shell in its pane, loses its glyph
+  under tmux (which can see the pane's foreground process) but reads as
+  "waiting on you" under herdr, which exposes no equivalent.
 - **The status pane** is sized as a fraction of the review window under herdr,
   where tmux pins it to exactly 8 rows. herdr's split API takes ratios only, so
   on a short terminal that pane can clip where the tmux one wouldn't.
+- **The pane you land on** when you jump to a review window is the diff viewer
+  under tmux and the status pane under herdr. herdr can only focus panes
+  directionally, and the flags that would set it outright risk yanking you out
+  of the PR list — not worth it to save one keystroke.
 - **Clipboard** needs no `set-clipboard` setting under herdr: it's the terminal
   emulator itself, so OSC 52 goes straight through (see below).
+
+`orbit-diff reset` is the one command that doesn't care which multiplexer you're
+in — it closes a worktree's window in either, from a plain shell, since it's
+routinely run from outside both.
 
 The herdr backend is written against herdr's documented CLI but hasn't been
 exercised against a running herdr server yet — if something in the review-window

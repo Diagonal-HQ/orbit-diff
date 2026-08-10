@@ -61,11 +61,29 @@ test("listTaggedPanes maps herdr's pane list onto the tmux backend's contract", 
   expect(claude.worktreePath).toBe("/wt/feature");
   expect(claude.window).toBe("t1");
   expect(claude.activity).toBe("12"); // revision stands in for window_activity
-  expect(claude.command).toBe("agent"); // a live agent session, not a bare shell
+  expect(claude.command).toBe("s1"); // named from the reported agent session
+});
 
-  // A pane with no agent session reads as "no agent running here", which is the
-  // question `command` answers for the tmux backend too.
-  expect(panes.find((p) => p.pane === "w1:p1").command).toBe("");
+// `command` exists so agent-state.mjs can skip a pane whose REPL exited and
+// left a bare shell. herdr can't answer that — PaneInfo has no foreground
+// process — and `agent_session` is NOT a stand-in: herdr populates it only when
+// an official integration reported a native session, so a live screen-detected
+// agent has none. Deriving `command` from it would make the scraper skip
+// exactly the panes that most need scraping.
+test("a pane herdr can't identify still reports a command, so it gets scraped", () => {
+  const payload = JSON.stringify({
+    panes: [
+      // Screen-detected: a name, but no official session reference.
+      { pane_id: "a", tokens: { orbit_role: "claude", orbit_wt: "/wt/a" }, agent: "claude-code" },
+      // herdr knows nothing at all about this one.
+      { pane_id: "b", tokens: { orbit_role: "claude", orbit_wt: "/wt/b" }, agent_status: "unknown" },
+    ],
+  });
+  const { run } = fakeHerdr([[is("pane", "list"), payload]]);
+  const panes = createHerdrBackend({ run, env: IN_HERDR }).listTaggedPanes();
+
+  expect(panes.find((p) => p.pane === "a").command).toBe("claude-code");
+  expect(panes.find((p) => p.pane === "b").command).toBeTruthy();
 });
 
 test("a worktree path that didn't survive as a token resolves through its hash", () => {
@@ -186,14 +204,16 @@ test("buildReviewWindow lays out four panes and seeds each one's command", () =>
     diff: "w9:diff",
   });
 
-  // The tab is built in the background, and the diff pane is the one that ends
-  // up active inside it.
+  // Nothing focuses anything. herdr's default is to leave focus alone and
+  // `--focus` "selects the new layout" — which could pull the user out of the
+  // PR list, breaking the promise that reviews open in the background.
   expect(calls[0]).toContain("--no-focus");
   const splits = calls.filter((c) => c[1] === "split");
-  expect(splits[0]).toContain("--focus");
-  expect(splits[0]).not.toContain("--no-focus");
-  expect(splits[1]).toContain("--no-focus");
-  expect(splits[2]).toContain("--no-focus");
+  expect(splits).toHaveLength(3);
+  for (const split of splits) {
+    expect(split).toContain("--no-focus");
+    expect(split).not.toContain("--focus");
+  }
 
   // Every pane is tagged with its role and its worktree.
   const tags = calls.filter((c) => c[1] === "report-metadata");
@@ -225,6 +245,38 @@ test("a failed split reports the error and hands back the tab so it can be clean
   const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/x" });
   expect(built.error).toMatch(/split/);
   expect(built.window).toBe("t9");
+});
+
+// A tab is only findable through its panes' tokens, so a half-built one has to
+// be tagged before it can be abandoned — otherwise neither `d` nor `orbit-diff
+// reset` could ever close it, and it would sit there orphaned forever.
+test("a tab abandoned mid-build is still findable, so it can be cleaned up", () => {
+  const calls = [];
+  const run = (args) => {
+    calls.push(args);
+    if (args[0] === "tab") return { status: 0, stdout: JSON.stringify({ tab_id: "t9", pane_id: "w9:p1" }), stderr: "" };
+    if (args[1] === "split") return { status: 1, stdout: "", stderr: "boom" };
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/x" });
+  expect(built.error).toBeTruthy();
+
+  // The surviving pane carries the worktree tag, written before the split.
+  const tagged = calls.find((c) => c[1] === "report-metadata");
+  expect(tagged).toBeTruthy();
+  expect(tagged).toContain("orbit_wt=/wt/x");
+  expect(calls.indexOf(tagged)).toBeLessThan(calls.findIndex((c) => c[1] === "split"));
+
+  // And a later scan finds the tab through it.
+  const relist = fakeHerdr([[is("pane", "list"), JSON.stringify({
+    panes: [{ pane_id: "w9:p1", tab_id: "t9", tokens: { orbit_role: "status", orbit_wt: "/wt/x" } }],
+  })]]);
+  expect(createHerdrBackend({ run: relist.run, env: IN_HERDR }).findWindowByWorktree("/wt/x")).toBe("t9");
+});
+
+test("ORBIT_MUX=herdr counts as being inside herdr", () => {
+  const { run } = fakeHerdr();
+  expect(createHerdrBackend({ run, env: { ORBIT_MUX: "herdr" } }).inMux()).toBe(true);
 });
 
 test("a herdr that isn't answering reads as an empty world, not an exception", () => {

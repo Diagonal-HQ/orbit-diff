@@ -20,8 +20,12 @@ function tmux(args) {
   return spawnSync("tmux", args, { encoding: "utf8" });
 }
 
+// `ORBIT_MUX=tmux` is an explicit instruction to drive tmux, so it satisfies
+// this the same way being inside a tmux pane does. Without that, forcing a
+// backend would select it and then have it refuse every review-window call —
+// see mux.mjs.
 export function inMux() {
-  return !!process.env.TMUX;
+  return process.env.ORBIT_MUX === "tmux" || !!process.env.TMUX;
 }
 
 // tmux has no notion of what an agent is doing — all it can hand back is the

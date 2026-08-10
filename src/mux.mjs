@@ -93,6 +93,28 @@ export const paneAlive = (pane) => activeMux().paneAlive(pane);
 export const openPlainWindow = (path, label) => activeMux().openPlainWindow(path, label);
 export const buildReviewWindow = (opts) => activeMux().buildReviewWindow(opts);
 
+// Close whatever window is holding `path`, in EITHER multiplexer, whether or
+// not we're inside one. Returns the closed window's id, or null if nothing was
+// holding it.
+//
+// Everything else in this module deliberately talks only to the multiplexer
+// we're running inside — driving the other one builds windows you can't see.
+// Teardown is the exception. `tmux list-windows -a` and `herdr pane list` both
+// answer from a plain shell as long as their server is up, and `orbit-diff
+// reset` is routinely run from a normal terminal to clean up after a worktree.
+// Gating that on being inside a multiplexer would delete the worktree and the
+// branch while leaving the window and its processes running.
+//
+// A backend whose server isn't running answers "nothing there", so sweeping
+// both costs one cheap failed call and can't close anything it shouldn't.
+export function closeWorktreeWindow(path) {
+  for (const backend of [tmux, herdr]) {
+    const window = backend.findWindowByWorktree(path);
+    if (window && backend.killWindow(window)) return window;
+  }
+  return null;
+}
+
 // The backend's own agent-state detection, or null when it has none. herdr
 // publishes semantic agent states; tmux can only show you the screen. Callers
 // should treat null as "scrape instead" — see agent-state.mjs.

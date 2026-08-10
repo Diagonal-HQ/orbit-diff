@@ -170,7 +170,9 @@ function sessionPathsByKey() {
 export function createHerdrBackend({ run = defaultRun, env = process.env, resolveKey = null } = {}) {
   const ok = (args) => run(args).status === 0;
 
-  const inMux = () => !!env.HERDR_PANE_ID;
+  // `ORBIT_MUX=herdr` counts as being inside herdr — it's an explicit
+  // instruction to drive it. See the matching note in tmux.mjs.
+  const inMux = () => env.ORBIT_MUX === "herdr" || !!env.HERDR_PANE_ID;
 
   // Every pane herdr knows about that orbit-diff has tagged, in ONE call —
   // the same contract `listTaggedPanes` has in the tmux backend:
@@ -182,11 +184,21 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   // its screen. It's a better signal than the tmux one — a counter on the pane
   // itself rather than a timestamp on its window.
   //
-  // `command` has no direct herdr equivalent (PaneInfo carries no foreground
-  // process name), so it reports "agent" whenever herdr has a live agent
-  // session for the pane and "" when it doesn't. agent-state.mjs reads it only
-  // to tell a running REPL from a pane that fell back to a bare shell, and an
-  // absent agent session answers that question the same way.
+  // `command` has no honest herdr equivalent. agent-state.mjs reads it for one
+  // thing — telling a running REPL from a pane whose agent exited and left a
+  // bare shell — and PaneInfo carries no foreground process name to answer it.
+  //
+  // It must NOT be derived from `agent_session`: herdr populates that "when an
+  // official integration has reported a native session reference" and omits it
+  // otherwise, so a perfectly live screen-detected agent has none. Reporting ""
+  // there would make agent-state.mjs skip the pane as a shell, and a worktree
+  // whose agent herdr can't classify would lose its glyph entirely — the exact
+  // case the scrape fallback exists to cover.
+  //
+  // So a tagged `claude` pane always reports something non-empty: we launched
+  // `pr.claude` in it ourselves, so it is an agent pane by construction. The
+  // trade is that under herdr we can't notice the REPL exiting, and such a
+  // worktree reads as "waiting on you" rather than dropping its glyph.
   const listTaggedPanes = () => {
     const res = run(["pane", "list"]);
     if (res.status !== 0) return [];
@@ -213,11 +225,19 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
       const pane = pickField(p, ["pane_id", "id"]);
       if (!pane) continue;
       const agentStatus = pickField(p, ["agent_status"]) || "";
+      // The agent's name when herdr knows it (`agent` for a screen-detected
+      // one, `agent_session` for an officially integrated one), else a marker
+      // that keeps the pane in the scraper's sights. Never "".
+      const agent =
+        pickField(p, ["agent"]) ||
+        (p.agent_session && pickField(p.agent_session, ["name", "agent", "id"])) ||
+        (p.agent_session ? "agent" : "") ||
+        "agent";
       out.push({
         pane,
         role,
         worktreePath,
-        command: p.agent_session ? "agent" : "",
+        command: agent,
         activity: pickField(p, ["revision"]) || "",
         window: pickField(p, ["tab_id"]) || "",
         agentStatus,
@@ -323,10 +343,17 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   //     pr-status.mjs prints); the closest herdr can do is a fraction of the
   //     top row, so on a short terminal that pane can clip where tmux's didn't.
   //
-  // Created with `--no-focus` so it never steals the current view. The diff
-  // pane's split is the one that carries `--focus`, which sets the *tab's*
-  // active pane without pulling the tab forward — so focusing this tab later
-  // lands on the review surface, as `select-pane` did under tmux.
+  // Nothing here focuses anything. herdr documents its default as "workspace
+  // and tab creation, and pane splitting, leave focus unchanged", with
+  // `--focus` meaning "selects the new layout" — it does NOT say that's scoped
+  // to the tab's own active pane, so passing it risks yanking the user out of
+  // the PR list, which is exactly the contract this flow promises not to break.
+  //
+  // The cost is that the tab opens with its original pane (`status`) active
+  // rather than the diff pane, where tmux ends with `select-pane -t diff`.
+  // herdr's `pane focus` is directional only — you can't focus a pane by id —
+  // so there's no way to set it without risking the same steal. Landing on the
+  // wrong pane is a keystroke; stealing focus mid-review is not.
   const buildReviewWindow = ({ worktreePath, name, statusCmd, setupCmd, claudeCmd, diffCmd }) => {
     if (!inMux()) return { error: "not inside herdr — start herdr to open a review window" };
 
@@ -340,16 +367,23 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     const statusPane = idFrom(created.stdout, ["pane_id"]) || firstPaneOfTab(window);
     if (!window || !statusPane) return { error: "couldn't parse herdr tab/pane ids", window };
 
+    // Tag before splitting, and tag each new pane as it appears. A tab is only
+    // findable through its panes' tokens, so a build that dies halfway has to
+    // leave behind something `findWindowByWorktree` can still see — otherwise
+    // neither `d` nor `orbit-diff reset` could ever close the partial tab.
+    // (tmux gets this for free: `@orbit_wt` goes on the window itself in step 1.)
+    tag(statusPane, "status", worktreePath);
+
     // 1. Split the whole tab horizontally: the original pane keeps the top
-    //    third, the new pane below it is the diff viewer. `--focus` makes the
-    //    diff pane the tab's active one for when the user comes back to it.
+    //    third, the new pane below it is the diff viewer.
     const bottom = run([
       "pane", "split", statusPane, "--direction", "down", "--ratio", "0.33",
-      "--cwd", worktreePath, "--focus",
+      "--cwd", worktreePath, "--no-focus",
     ]);
     if (bottom.status !== 0) return { error: (bottom.stderr || "herdr pane split failed").trim(), window };
     const diffPane = idFrom(bottom.stdout, ["pane_id", "id"], { bare: true });
     if (!diffPane) return { error: "couldn't parse herdr pane id", window };
+    tag(diffPane, "diff", worktreePath);
 
     // 2. Split the top row left|right — Claude takes 70% of it. The left 30% is
     //    short status text and a script runner, not code, so it needs no more.
@@ -360,6 +394,7 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     if (right.status !== 0) return { error: (right.stderr || "herdr pane split failed").trim(), window };
     const claudePane = idFrom(right.stdout, ["pane_id", "id"], { bare: true });
     if (!claudePane) return { error: "couldn't parse herdr pane id", window };
+    tag(claudePane, "claude", worktreePath);
 
     // 3. Stack setup under status in that left column. tmux gave status a fixed
     //    8 rows; 45% of a third of the tab is the nearest ratio-only equivalent.
@@ -370,11 +405,7 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     if (below.status !== 0) return { error: (below.stderr || "herdr pane split failed").trim(), window };
     const setupPane = idFrom(below.stdout, ["pane_id", "id"], { bare: true });
     if (!setupPane) return { error: "couldn't parse herdr pane id", window };
-
-    tag(statusPane, "status", worktreePath);
     tag(setupPane, "setup", worktreePath);
-    tag(claudePane, "claude", worktreePath);
-    tag(diffPane, "diff", worktreePath);
 
     if (statusCmd) runInPane(statusPane, statusCmd);
     if (setupCmd) runInPane(setupPane, setupCmd);
