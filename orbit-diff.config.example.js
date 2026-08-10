@@ -31,7 +31,8 @@ export default {
   // open PR, including drafts. Picking one (enter)
   // makes orbit-diff:
   //   1. create a git worktree for the PR branch,
-  //   2. open a detached tmux review window with four panes —
+  //   2. open a detached review window (a tmux window, or a herdr tab) with
+  //      four panes —
   //        ┌ status ┬─── claude ───┐
   //        ├────────┤              │
   //        │ setup  │              │

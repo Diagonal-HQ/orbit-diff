@@ -8,7 +8,10 @@
 //
 // Caveats the caller should plan around:
 //   - tmux swallows OSC 52 unless it's wrapped in its DCS passthrough form and
-//     `set -g set-clipboard on` is configured. We do the wrapping here.
+//     `set -g set-clipboard on` is configured. We do the wrapping here. herdr
+//     needs no equivalent: it's the terminal emulator rather than a layer
+//     inside one, so the unwrapped sequence below is already the right thing —
+//     which is what a herdr pane gets, since `TMUX` is unset there.
 //   - Some terminals (notably macOS Terminal.app) ignore OSC 52 entirely, and
 //     there is no reply, so we can't confirm success. Callers should pair this
 //     with a visible fallback (e.g. writing the text to a file).

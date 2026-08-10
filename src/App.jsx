@@ -13,7 +13,7 @@ import { AskPanel, askPanelMetrics, flattenAskRows } from "./AskPanel.jsx";
 import { useDimensions } from "./useDimensions.mjs";
 import { copyViaOSC52, copyEverywhere } from "./clipboard.mjs";
 import { useMouseSelection } from "./mouse-select.mjs";
-import { sendLine, paneAlive } from "./tmux.mjs";
+import { sendLine, paneAlive } from "./mux.mjs";
 import { FALLBACK } from "./theme.mjs";
 import { openUrl } from "./platform.mjs";
 import { detectPR, submitAnnotations } from "./github.mjs";
@@ -466,9 +466,9 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
 
   // In a managed review window, hand the change request to the Claude pane
   // that's already open beside us: drop the doc on disk and poke that pane with a
-  // one-line "apply the requests in <path>" via tmux send-keys. Claude stays a
-  // live session you keep talking to, and the diff viewer never gives up its
-  // pane. Press R to reload the diff once Claude has finished editing.
+  // one-line "apply the requests in <path>". Claude stays a live session you keep
+  // talking to, and the diff viewer never gives up its pane. Press R to reload
+  // the diff once Claude has finished editing.
   const sendToClaudePane = () => {
     const withText = annotations.filter((a) => a.text.trim());
     if (withText.length === 0) {

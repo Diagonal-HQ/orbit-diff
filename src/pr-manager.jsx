@@ -5,7 +5,7 @@
 // a handoff loop.
 
 import React from "react";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdirSync, openSync, closeSync, existsSync } from "node:fs";
 import { dirname, basename, resolve } from "node:path";
 import { render } from "ink";
@@ -17,12 +17,15 @@ import { loadConfig, CONFIG_HINT } from "./ai/config.mjs";
 import { orbitDir, repoRoot } from "./paths.mjs";
 import { openUrl } from "./platform.mjs";
 import {
-  inTmux,
+  inMux,
+  muxName,
+  noMuxError,
   findWindowByWorktree,
   focusWindow,
   killWindow,
+  openPlainWindow,
   buildReviewWindow,
-} from "./tmux.mjs";
+} from "./mux.mjs";
 import { sessionKey, sessionPath, writeSession, updateSession, deleteSession, listSessions, sessionForWorktree } from "./session.mjs";
 import { createAgentPoller } from "./agent-state.mjs";
 import { spawnWatchdog } from "./watchdog.mjs";
@@ -32,9 +35,10 @@ function slug(s) {
   return String(s).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "x";
 }
 
-// tmux window name for a worktree: its branch, else a short detached-HEAD tag,
+// Window/tab label for a worktree: its branch, else a short detached-HEAD tag,
 // else the leaf directory. Only used for display — windows are matched by path
-// (see `@orbit_wt` below), so this can collide or be renamed harmlessly.
+// (tagged as `orbit_wt` by whichever multiplexer backend is active), so this
+// can collide or be renamed harmlessly.
 function windowName(wt) {
   if (wt.branch) return wt.branch;
   if (wt.head) return `det-${wt.head.slice(0, 7)}`;
@@ -73,24 +77,25 @@ export async function runPrManager() {
     }
   };
 
-  // Open a worktree in a tmux window: focus the existing window for this
+  // Open a worktree in a multiplexer window: focus the existing window for this
   // worktree if there is one, otherwise create one rooted at its path. Windows
-  // are tagged with the worktree path via the `@orbit_wt` window option
-  // (survives shell-driven automatic-rename and name collisions), so re-opening
-  // a worktree jumps back to its window instead of spawning a duplicate.
+  // are tagged with the worktree path (survives shell-driven automatic-rename
+  // and name collisions), so re-opening a worktree jumps back to its window
+  // instead of spawning a duplicate.
   //
   // If orbit-diff originally created this worktree (a session record exists for
-  // it) but its window is gone — e.g. the tmux server was restarted since — we
-  // rebuild the full four-pane review window rather than a bare shell window, so
-  // it comes back exactly as it was first opened. Worktrees orbit-diff didn't
-  // create (no session) still just get a plain window rooted at the path.
+  // it) but its window is gone — e.g. the tmux/herdr server was restarted since
+  // — we rebuild the full four-pane review window rather than a bare shell
+  // window, so it comes back exactly as it was first opened. Worktrees
+  // orbit-diff didn't create (no session) still just get a plain window rooted
+  // at the path.
   //
-  // Requires running inside tmux. Returns { ok, focused, rebuilt? } /
+  // Requires running inside a multiplexer. Returns { ok, focused, rebuilt? } /
   // { ok:false, error }.
   const openWorktree = (wt) => {
     if (!wt || !wt.path) return { ok: false, error: "no worktree to open" };
-    if (wt.bare) return { ok: false, error: "can't open a bare worktree in tmux" };
-    if (!process.env.TMUX) return { ok: false, error: "not inside tmux — start tmux to open worktrees in windows" };
+    if (wt.bare) return { ok: false, error: "can't open a bare worktree in a window" };
+    if (!inMux()) return { ok: false, error: noMuxError("open worktrees in windows") };
     try {
       // Already open? Focus it instead of duplicating.
       const existing = findWindowByWorktree(wt.path);
@@ -131,25 +136,6 @@ export async function runPrManager() {
     }
   };
 
-  // Open a bare, single-pane tmux window rooted at `path` — no review panes and
-  // nothing run in it. -P -F prints the new window's id; new-window also selects
-  // it (so the user lands in it). Tag it with `@orbit_wt` so a later open
-  // re-focuses this window instead of spawning a duplicate.
-  // Returns { ok } / { ok:false, error }.
-  function openPlainWindow(path, name) {
-    const created = spawnSync(
-      "tmux",
-      ["new-window", "-P", "-F", "#{window_id}", "-n", name, "-c", path],
-      { encoding: "utf8" },
-    );
-    if (created.status !== 0) {
-      return { ok: false, error: (created.stderr || "").trim() || "tmux new-window failed" };
-    }
-    const id = created.stdout.trim();
-    if (id) spawnSync("tmux", ["set-option", "-w", "-t", id, "@orbit_wt", path]);
-    return { ok: true };
-  }
-
   // Where a worktree goes: the configured `pr.worktreeDir` template, else a
   // sibling directory `<repo>-worktrees/<branch>` next to the main checkout.
   // Shared by PR reviews (startReview) and ad-hoc local worktrees (startLocal),
@@ -175,7 +161,7 @@ export async function runPrManager() {
   // { ok, focused?, path, provisioning? } or { ok:false, error }.
   const startReview = (pr) => {
     if (!pr) return { ok: false, error: "no PR selected" };
-    if (!inTmux()) return { ok: false, error: "not inside tmux — start tmux to open a review window" };
+    if (!inMux()) return { ok: false, error: noMuxError("open a review window") };
 
     const wtPath = worktreePathFor(pr);
 
@@ -222,7 +208,7 @@ export async function runPrManager() {
   const startLocal = (name) => {
     const branch = name.trim();
     if (!branch) return { ok: false, error: "no name given" };
-    if (!inTmux()) return { ok: false, error: "not inside tmux — start tmux to open a review window" };
+    if (!inMux()) return { ok: false, error: noMuxError("open a review window") };
 
     const wtPath = worktreePathFor({ headRefName: branch });
 
@@ -251,7 +237,7 @@ export async function runPrManager() {
   };
 
   // Check out an *existing* branch — one on origin, or already local — in a
-  // worktree and drop into a plain tmux window there. Deliberately the bare
+  // worktree and drop into a plain multiplexer window there. Deliberately the bare
   // minimum: no session record, no `pr.setup`, no review panes. For grabbing
   // someone's branch to poke at when provisioning a whole review environment
   // would be overkill. Leaving no session behind also means a later `enter` on
@@ -262,7 +248,7 @@ export async function runPrManager() {
   const checkoutBranch = (name) => {
     const branch = name.trim().replace(/^origin\//, "");
     if (!branch) return { ok: false, error: "no branch given" };
-    if (!inTmux()) return { ok: false, error: "not inside tmux — start tmux to open a worktree window" };
+    if (!inMux()) return { ok: false, error: noMuxError("open a worktree window") };
 
     const wtPath = worktreePathFor({ headRefName: branch });
 
@@ -371,8 +357,8 @@ export async function runPrManager() {
 
   // Reads each review window's Claude pane so the worktrees rail can flag the
   // agents that have finished their turn. Created once (it caches per pane
-  // between polls) and only outside tmux is it pointless — there are no panes.
-  const pollAgentStates = inTmux() ? createAgentPoller() : null;
+  // between polls); only outside a multiplexer is it pointless — no panes.
+  const pollAgentStates = inMux() ? createAgentPoller() : null;
 
   const mouse = createMouseController(process.stdout);
   const { stdin: lockedStdin, enable: enableScrollLock, disable: disableScrollLock } = mouse;
@@ -393,6 +379,7 @@ export async function runPrManager() {
       pollAgentStates={pollAgentStates}
       config={config}
       mouse={mouse}
+      mux={muxName()}
     />,
     { exitOnCtrlC: true, stdout: mouse.stdout, stdin: lockedStdin },
   );

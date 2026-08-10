@@ -36,26 +36,26 @@ const sameStates = (a, b) => {
 // (`loadPRs` / `loadWorktrees` / `loadSessions`), so the shell paints instantly
 // and the data streams in when `gh` answers; `r` refetches in place. Starting a
 // PR (`enter`) hands off to `startReview` — it creates the worktree and a
-// detached three-pane tmux review window in the background (you stay in the
+// detached three-pane review window in the background (you stay in the
 // list) and a spinner tracks provisioning until the setup script's
 // `orbit-diff env-report` lands, at which point the PR is tagged with its env
 // instance. `o` opens the PR in the browser, `d` tears its workspace down (when
 // one exists) via `finishReview`, `tab` moves focus to the worktrees pane (where
-// `enter` jumps to a worktree's tmux window, `o` opens its PR, and `d` also
+// `enter` jumps to a worktree's window, `o` opens its PR, and `d` also
 // tears it down). Each worktree row also carries a second glyph for the state
 // of the coding agent running in its review window — a green `●` means that
 // agent finished its turn and is waiting on you (`!` that it's blocked on a
-// permission prompt, a dim `·` that it's still working) — polled off the tmux
+// permission prompt, a dim `·` that it's still working) — polled off the review
 // panes by `pollAgentStates`. `n` opens a prompt for a branch name and hands it to
 // `startLocal` — the same worktree + review window as a PR, but on a brand-new
 // local branch with no PR behind it — `b` prompts for an *existing* branch
 // (usually one on origin) and hands it to `checkoutBranch`, which only checks it
-// out in a worktree and opens a plain tmux window — no setup script, no review
+// out in a worktree and opens a plain window — no setup script, no review
 // panes — `/` filters the list, and `left`/`right`
 // switch between the "Mine" tab (assigned to or awaiting review from you) and
 // "All" (every open PR in the repo) — each tab fetches its own list, cached
 // until the next `r` refresh.
-export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null, loadWorktrees, loadSessions, startReview, startLocal, checkoutBranch, finishReview, openUrl, openWorktree, pollAgentStates = null, config, mouse = null }) {
+export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null, loadWorktrees, loadSessions, startReview, startLocal, checkoutBranch, finishReview, openUrl, openWorktree, pollAgentStates = null, config, mouse = null, mux = null }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
@@ -74,8 +74,10 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
   // per-PR "provisioning" spinner and the env-instance tags.
   const [sessions, setSessions] = useState(() => safeCall(loadSessions));
   // worktree path → "busy" | "blocked" | "awaiting": what the coding agent in
-  // each review window is doing, read off its tmux pane (see agent-state.mjs).
+  // each review window is doing, read off its pane (see agent-state.mjs).
   const [agentStates, setAgentStates] = useState({});
+  // "tmux window" / "herdr window", or just "window" when we aren't in either.
+  const winLabel = mux ? `${mux} window` : "window";
   const [selected, setSelected] = useState(0);
   const [selectedWt, setSelectedWt] = useState(0);
   const [descScroll, setDescScroll] = useState(0); // scroll offset into the description pane
@@ -166,9 +168,9 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
 
   // Poll what each review window's agent is up to, so a worktree whose agent
   // has finished its turn lights up without you having to visit its window.
-  // Reading a pane is a tmux call per *changed* pane (the poller caches on the
-  // window's activity timestamp), so a screen of settled worktrees costs one
-  // `list-panes` per tick. Keep the previous object when nothing moved —
+  // Reading a pane is one multiplexer call per *changed* pane (the poller caches
+  // on each pane's activity marker), so a screen of settled worktrees costs a
+  // single list call per tick. Keep the previous object when nothing moved —
   // returning a fresh one every 2.5s would repaint the whole frame for nothing.
   useEffect(() => {
     if (!pollAgentStates) return;
@@ -178,7 +180,7 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
       try {
         next = pollAgentStates() || {};
       } catch {
-        return; // a transient tmux hiccup keeps the last known states
+        return; // a transient multiplexer hiccup keeps the last known states
       }
       if (live) setAgentStates((prev) => (sameStates(prev, next) ? prev : next));
     };
@@ -294,7 +296,7 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
   };
 
   // `b`'s prompt: check out an existing branch (origin's or a local one) in a
-  // worktree and open a plain tmux window there — no setup script, no review
+  // worktree and open a plain window there — no setup script, no review
   // panes, nothing else run.
   const checkoutBranchWt = (name) => {
     const res = checkoutBranch(name);
@@ -304,8 +306,8 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
     if (res.focused) return setToast(`⧉ focused ${label}`);
     setToast(
       res.created
-        ? `⧉ ${label}: worktree checked out · opened in a tmux window`
-        : `⧉ ${label}: opened existing worktree in a tmux window`,
+        ? `⧉ ${label}: worktree checked out · opened in a ${winLabel}`
+        : `⧉ ${label}: opened existing worktree in a ${winLabel}`,
     );
   };
 
@@ -319,7 +321,7 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
   };
 
   // `d` on a worktree finishes the review: teardown command (or worktree removal
-  // when unset), closes the tmux window, drops the session. If its branch matches
+  // when unset), closes the review window, drops the session. If its branch matches
   // a listed PR, target the full PR so {number}/{title}/{url} resolve too.
   const finishWorktree = (wt) => {
     if (!wt) return;
@@ -340,7 +342,7 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
     setToast(`✓ finishing ${label}${bits.length ? " · " + bits.join(" · ") : ""}${where}`);
   };
 
-  // `enter` on a worktree opens it in a tmux window (or focuses the existing
+  // `enter` on a worktree opens it in a multiplexer window (or focuses the existing
   // one). The heavy lifting lives in the `openWorktree` callback; here we just
   // toast the outcome.
   const openWorktreeWindow = (wt) => {
@@ -348,7 +350,7 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
     const res = openWorktree(wt);
     if (!res.ok) return setToast(res.error);
     const label = wt.branch || tildeify(wt.path) || "worktree";
-    setToast(res.focused ? `⧉ focused ${label}` : `⧉ opened ${label} in a tmux window`);
+    setToast(res.focused ? `⧉ focused ${label}` : `⧉ opened ${label} in a ${winLabel}`);
   };
 
   // `o` on a worktree opens the matching PR in the browser (matched by branch).
@@ -565,7 +567,7 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
       ) : mode === "checkoutBranch" ? (
         <NewWorktreeBar name={newWtName} label="checkout branch" action="checkout" />
       ) : (
-        <StatusBar focus={paneFocus} setupCmd={setupCmd} inTmux={!!process.env.TMUX} />
+        <StatusBar focus={paneFocus} setupCmd={setupCmd} mux={mux} />
       )}
     </Box>
   );
@@ -967,18 +969,18 @@ function NewWorktreeBar({ name, label = "new worktree", action = "create" }) {
   );
 }
 
-function StatusBar({ focus, setupCmd, inTmux }) {
+function StatusBar({ focus, setupCmd, mux }) {
   // Action hints depend on which pane is focused: start/open on the PR list,
   // focus/finish on the worktrees pane. (Transient status shows in the header's
   // top-right, so the shortcuts stay visible here.)
   const actions =
     focus === "worktrees" ? (
       <>
-        <Text bold>enter</Text> tmux  <Text bold>o</Text> open  <Text bold>d</Text> finish
+        <Text bold>enter</Text> {mux || "window"}  <Text bold>o</Text> open  <Text bold>d</Text> finish
       </>
     ) : (
       <>
-        <Text bold>enter</Text> {inTmux ? "start" : <Text dimColor>start (needs tmux)</Text>}  <Text bold>o</Text> open  <Text bold>d</Text> finish
+        <Text bold>enter</Text> {mux ? "start" : <Text dimColor>start (needs tmux or herdr)</Text>}  <Text bold>o</Text> open  <Text bold>d</Text> finish
       </>
     );
   return (

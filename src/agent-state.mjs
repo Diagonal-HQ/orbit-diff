@@ -18,8 +18,14 @@
 //   "blocked"  — stopped on a permission/choice prompt, needs an answer NOW
 //   "awaiting" — turn finished, composer idle, waiting on you
 //   (absent)   — no agent in that worktree, or the pane fell back to a shell
+//
+// All of the above is the *fallback*. Under herdr the multiplexer detects agent
+// state itself and publishes it as a field, so `pollAgentStates` asks the
+// backend first (see `nativeAgentStates` in mux.mjs) and only scrapes the panes
+// the backend has no opinion about. Under tmux there is no such field and every
+// pane goes through the classifier below.
 
-import { listTaggedPanes, capturePane } from "./tmux.mjs";
+import { listTaggedPanes, capturePane, nativeAgentStates } from "./mux.mjs";
 
 // How many non-blank lines up from the bottom to consider. The status line sits
 // directly above the composer box, which itself is the last 2-4 rendered rows,
@@ -72,14 +78,21 @@ export function classifyAgentPane(text) {
 const FORCE_EVERY = 6;
 
 // Build the poller the PR manager hands to the TUI. Returns a function mapping
-// worktree path → state for every review pane tmux currently knows about.
+// worktree path → state for every review pane the multiplexer currently knows
+// about.
 //
 // Cost per call is one `list-panes` plus one `capture-pane` for each agent pane
 // that has printed something since the last look — so a screen full of settled
 // worktrees costs a single tmux invocation, and a busy one costs a handful.
+// Under herdr the second half of that mostly disappears: states arrive with the
+// pane list, and only panes herdr reports as `unknown` get read.
 //
-// Panes are injectable so the tests don't need a tmux server.
-export function createAgentPoller({ list = listTaggedPanes, capture = capturePane } = {}) {
+// Everything is injectable so the tests don't need a multiplexer running.
+export function createAgentPoller({
+  list = listTaggedPanes,
+  capture = capturePane,
+  native = nativeAgentStates,
+} = {}) {
   // pane id → { activity, state, age } — survives across polls so an unchanged
   // pane can be answered from cache.
   const cache = new Map();
@@ -88,9 +101,25 @@ export function createAgentPoller({ list = listTaggedPanes, capture = capturePan
     const byPath = {};
     const live = new Set();
 
+    // Whatever the backend already knows. A backend without detection returns
+    // null, and a throwing one is treated the same — scrape everything.
+    let reported = null;
+    try {
+      reported = native ? native() : null;
+    } catch {
+      reported = null;
+    }
+
     for (const p of list()) {
       if (p.role !== "claude") continue;
       live.add(p.pane);
+
+      // The backend told us outright — no screen to read, no cache to keep.
+      if (reported && reported[p.worktreePath]) {
+        byPath[p.worktreePath] = reported[p.worktreePath];
+        cache.delete(p.pane);
+        continue;
+      }
       // The REPL exited and left a shell (or tmux couldn't read the command).
       if (!p.command || SHELLS.has(p.command)) {
         cache.delete(p.pane);

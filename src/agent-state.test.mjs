@@ -91,6 +91,11 @@ test("a pane that hasn't drawn anything yet has no state", () => {
 
 // ---- poller ----
 
+// The poller asks the active backend for agent states before scraping. These
+// tests are about the scraping path, so they pin the backend to "no opinion" —
+// otherwise they'd talk to whatever multiplexer the test runner is inside.
+const scraping = (opts) => createAgentPoller({ native: () => null, ...opts });
+
 const pane = (over = {}) => ({
   pane: "%1",
   role: "claude",
@@ -101,7 +106,7 @@ const pane = (over = {}) => ({
 });
 
 test("poll maps worktree paths to their agent's state", () => {
-  const poll = createAgentPoller({
+  const poll = scraping({
     list: () => [pane(), pane({ pane: "%2", worktreePath: "/wt/other" })],
     capture: (p) => (p === "%1" ? AWAITING : BUSY),
   });
@@ -109,7 +114,7 @@ test("poll maps worktree paths to their agent's state", () => {
 });
 
 test("poll ignores non-agent panes and panes that fell back to a shell", () => {
-  const poll = createAgentPoller({
+  const poll = scraping({
     list: () => [
       pane({ role: "diff", worktreePath: "/wt/a" }),
       pane({ pane: "%2", worktreePath: "/wt/b", command: "zsh" }),
@@ -122,7 +127,7 @@ test("poll ignores non-agent panes and panes that fell back to a shell", () => {
 
 test("an unchanged pane is answered from cache instead of re-read", () => {
   let captures = 0;
-  const poll = createAgentPoller({
+  const poll = scraping({
     list: () => [pane()],
     capture: () => {
       captures++;
@@ -137,7 +142,7 @@ test("an unchanged pane is answered from cache instead of re-read", () => {
 test("new output on a window re-reads that pane", () => {
   let text = BUSY;
   let activity = "1000";
-  const poll = createAgentPoller({
+  const poll = scraping({
     list: () => [pane({ activity })],
     capture: () => text,
   });
@@ -149,7 +154,7 @@ test("new output on a window re-reads that pane", () => {
 
 test("a settled pane is re-read periodically, so a missed tick can't pin a glyph", () => {
   let captures = 0;
-  const poll = createAgentPoller({
+  const poll = scraping({
     list: () => [pane()],
     capture: () => {
       captures++;
@@ -161,6 +166,62 @@ test("a settled pane is re-read periodically, so a missed tick can't pin a glyph
 });
 
 test("a pane that vanishes mid-poll drops out rather than throwing", () => {
-  const poll = createAgentPoller({ list: () => [pane()], capture: () => null });
+  const poll = scraping({ list: () => [pane()], capture: () => null });
   expect(poll()).toEqual({});
+});
+
+// ---- native states ----
+//
+// Under herdr the multiplexer reports agent state itself, so the classifier
+// above is a fallback rather than the mechanism. These cover the handover.
+
+test("a state the backend reports is used without reading the pane", () => {
+  let captures = 0;
+  const poll = createAgentPoller({
+    list: () => [pane()],
+    capture: () => {
+      captures++;
+      return BUSY;
+    },
+    native: () => ({ "/wt/feature": "blocked" }),
+  });
+  expect(poll()).toEqual({ "/wt/feature": "blocked" });
+  expect(captures).toBe(0);
+});
+
+test("panes the backend has no opinion about still get scraped", () => {
+  const poll = createAgentPoller({
+    list: () => [pane(), pane({ pane: "%2", worktreePath: "/wt/other" })],
+    capture: () => BUSY,
+    // herdr answered for one worktree and reported `unknown` for the other.
+    native: () => ({ "/wt/feature": "awaiting" }),
+  });
+  expect(poll()).toEqual({ "/wt/feature": "awaiting", "/wt/other": "busy" });
+});
+
+test("a backend that throws mid-poll falls back to scraping rather than blanking the rail", () => {
+  const poll = createAgentPoller({
+    list: () => [pane()],
+    capture: () => BUSY,
+    native: () => {
+      throw new Error("herdr socket went away");
+    },
+  });
+  expect(poll()).toEqual({ "/wt/feature": "busy" });
+});
+
+test("a worktree switching from reported to scraped doesn't serve a stale cached state", () => {
+  let reported = { "/wt/feature": "blocked" };
+  let text = BUSY;
+  const poll = createAgentPoller({
+    list: () => [pane()],
+    capture: () => text,
+    native: () => reported,
+  });
+  expect(poll()).toEqual({ "/wt/feature": "blocked" });
+  // herdr loses track of the agent (it reports `unknown` now) — the next poll
+  // must read the screen, not resurrect the cache entry from before.
+  reported = {};
+  text = AWAITING;
+  expect(poll()).toEqual({ "/wt/feature": "awaiting" });
 });

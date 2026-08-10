@@ -36,7 +36,7 @@ export const DEFAULTS = {
   editor: "",
   review: { concurrency: 4 },
   // `orbit-diff prs` PR-management. Starting a PR now creates the worktree and a
-  // three-pane tmux review window itself (setup · claude · orbit-diff); these
+  // three-pane review window itself (setup · claude · orbit-diff); these
   // commands plug your own tooling into that flow. Tokens {branch} {base}
   // {number} {repo} {title} {url} are substituted (shell-quoted); commands run in
   // your login shell so aliases/functions resolve.
@@ -87,7 +87,7 @@ export default {
   review: {
     concurrency: 4, // how many files to review in parallel (1–8)
   },
-  // \`orbit-diff prs\` — starting a PR creates the worktree + a three-pane tmux
+  // \`orbit-diff prs\` — starting a PR creates the worktree + a three-pane
   // review window (setup · claude · orbit-diff) for you. These plug your tooling
   // into that flow. Tokens {branch} {base} {number} {repo} {title} {url} are
   // shell-quoted; commands run in your login shell so aliases/functions work.

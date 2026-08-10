@@ -15,7 +15,7 @@ import { listWorktrees } from "./git.mjs";
 import { renderPath } from "./pr.mjs";
 import { orbitDirFor, pathSlug } from "./paths.mjs";
 import { deleteSession, listSessions, sessionKey } from "./session.mjs";
-import { findWindowByWorktree, killWindow } from "./tmux.mjs";
+import { findWindowByWorktree, killWindow } from "./mux.mjs";
 
 function runGit(cwd, args) {
   return spawnSync("git", ["-C", cwd, ...args], {
@@ -225,7 +225,7 @@ export async function resetBranch(rawBranch, overrides = {}) {
 export async function runResetCommand(branch) {
   if (branch === "--help" || branch === "-h") {
     console.log("usage: orbit-diff reset <branch>");
-    console.log("removes the local worktree, branch, tmux window, sessions, and cached branch state");
+    console.log("removes the local worktree, branch, review window, sessions, and cached branch state");
     return 0;
   }
   const result = await resetBranch(branch);

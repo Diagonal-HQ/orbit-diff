@@ -2,6 +2,10 @@
 // finding a worktree's window (so re-opening focuses instead of duplicating),
 // and poking the live Claude pane with a change request.
 //
+// This is one of two interchangeable multiplexer backends — see `mux.mjs`,
+// which picks between this and `herdr.mjs` at startup and is what the rest of
+// the codebase imports. Both modules export the same names; keep them in step.
+//
 // Every pane orbit-diff creates is tagged with two user options:
 //   @orbit_wt   <worktree path>          (on the window — matches the old behaviour)
 //   @orbit_role status|setup|claude|diff (on each pane — so the diff viewer can
@@ -10,13 +14,21 @@
 
 import { spawnSync } from "node:child_process";
 
+export const name = "tmux";
+
 function tmux(args) {
   return spawnSync("tmux", args, { encoding: "utf8" });
 }
 
-export function inTmux() {
+export function inMux() {
   return !!process.env.TMUX;
 }
+
+// tmux has no notion of what an agent is doing — all it can hand back is the
+// pane's rendered screen, which is why `agent-state.mjs` exists. Null here
+// means "no native detection, go and scrape"; the herdr backend returns real
+// states instead.
+export const nativeAgentStates = null;
 
 // The window id (e.g. "@7") tagged with this worktree path, or null. Scans all
 // sessions so it works no matter which one you're driving from.
@@ -93,6 +105,21 @@ export function paneAlive(pane) {
   return res.stdout.split("\n").includes(pane);
 }
 
+// A bare, single-pane window rooted at `path` — no review panes and nothing run
+// in it. `-P -F` prints the new window's id; new-window also selects it (so the
+// user lands in it). Tagged with `@orbit_wt` so a later open re-focuses this
+// window instead of spawning a duplicate.
+// Returns { ok } / { ok:false, error }.
+export function openPlainWindow(path, label) {
+  const created = tmux(["new-window", "-P", "-F", "#{window_id}", "-n", label || "worktree", "-c", path]);
+  if (created.status !== 0) {
+    return { ok: false, error: (created.stderr || "").trim() || "tmux new-window failed" };
+  }
+  const id = created.stdout.trim();
+  if (id) tmux(["set-option", "-w", "-t", id, "@orbit_wt", path]);
+  return { ok: true };
+}
+
 // Build the detached four-pane review window for a worktree:
 //
 //   ┌ status ┬─────────── claude ────────────┐
@@ -106,13 +133,13 @@ export function paneAlive(pane) {
 // view. Returns { window, panes: { status, setup, claude, diff } } or
 // { error } (with `window` set if the window was created before a later step
 // failed, so the caller can record it for cleanup).
-export function buildReviewWindow({ worktreePath, name, statusCmd, setupCmd, claudeCmd, diffCmd }) {
-  if (!inTmux()) return { error: "not inside tmux — start tmux to open a review window" };
+export function buildReviewWindow({ worktreePath, name: label, statusCmd, setupCmd, claudeCmd, diffCmd }) {
+  if (!inMux()) return { error: "not inside tmux — start tmux to open a review window" };
 
   // 1. New detached window; its single pane becomes the bottom (diff) pane.
   const win = tmux([
     "new-window", "-d", "-P", "-F", "#{window_id}\t#{pane_id}",
-    "-n", name || "review", "-c", worktreePath,
+    "-n", label || "review", "-c", worktreePath,
   ]);
   if (win.status !== 0) return { error: (win.stderr || "tmux new-window failed").trim() };
   const [window, diffPane] = win.stdout.trim().split("\t");

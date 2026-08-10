@@ -154,9 +154,9 @@ stream in when `gh` answers.
 | `o` | open the PR (or the worktree's PR) in the browser |
 | `d` | **finish** — tear the review down, if this PR has one (see below) |
 | `n` | **new local worktree** — prompt for a branch name and open it the same way as a PR, with no PR behind it |
-| `b` | **check out a branch** — prompt for an existing branch (origin's or local) and open just a worktree + plain tmux window, no setup script |
+| `b` | **check out a branch** — prompt for an existing branch (origin's or local) and open just a worktree + plain window, no setup script |
 | `Tab` | switch focus between the PR list and the worktrees pane |
-| `Enter` (worktrees) | jump to that worktree's tmux window |
+| `Enter` (worktrees) | jump to that worktree's window |
 | `/` | filter the list (fuzzy match on number / title / branch) |
 | `r` | refresh the list + worktrees |
 | `q` / `Esc` / `Ctrl-c` | quit (`Esc` clears an active filter first) |
@@ -170,25 +170,33 @@ it's just not tagged with a PR number since there isn't one.
 
 Press `b` when you only want the code. Type an existing branch name (a leading
 `origin/` is fine) and `Enter` fetches it, checks it out in a worktree, and
-drops you in a plain tmux window there — that's all. No `pr.setup`, no review
+drops you in a plain window there — that's all. No `pr.setup`, no review
 panes, no session record, so nothing is provisioned and there's nothing to
 report back. It still lands in the worktrees pane, where `Enter` refocuses its
 window and `d` cleans it up like any other worktree.
 
 #### Which agents are waiting on you
 
-Neither Claude Code nor Codex publishes its turn state anywhere another process
-can read it, so orbit-diff reads the one thing they do publish: the screen. Every
-couple of seconds it looks at each review window's `claude` pane with
-`tmux capture-pane` — no focusing, nothing stolen — and tells a live spinner
-("`· Tempering… (1m 26s · ↓ 4.8k tokens)`") from a settled composer. Panes are
-only re-read when tmux says the window has printed something since the last
-look, so a rail of idle worktrees costs one `tmux list-panes` per tick.
+How this works depends on which multiplexer you're in.
 
-Because it's reading someone else's UI, treat it as a hint rather than a
-guarantee: an unfamiliar screen reports "waiting" rather than erroring, and a
-worktree whose agent has exited (leaving a bare shell) simply loses its glyph.
-Worktrees opened with `b` have no agent pane, so they never carry one.
+**Under herdr**, it just asks. herdr detects agent state itself and publishes it
+as a field on the pane, so orbit-diff reads `working` / `blocked` / `idle` /
+`done` straight off the pane list — no guessing.
+
+**Under tmux**, there's nothing to ask. Neither Claude Code nor Codex publishes
+its turn state anywhere another process can read it, so orbit-diff reads the one
+thing they do publish: the screen. Every couple of seconds it looks at each
+review window's `claude` pane with `tmux capture-pane` — no focusing, nothing
+stolen — and tells a live spinner ("`· Tempering… (1m 26s · ↓ 4.8k tokens)`")
+from a settled composer. Panes are only re-read when tmux says the window has
+printed something since the last look, so a rail of idle worktrees costs one
+`tmux list-panes` per tick.
+
+That screen-reading is a hint rather than a guarantee: an unfamiliar screen
+reports "waiting" rather than erroring, and a worktree whose agent has exited
+(leaving a bare shell) simply loses its glyph. It's also the fallback under
+herdr, for panes herdr itself reports as `unknown`. Worktrees opened with `b`
+have no agent pane, so they never carry one.
 
 ### The review flow
 
@@ -197,7 +205,7 @@ you stay in the PR list (the new window opens in the background) and a spinner o
 the PR line tracks progress. Under the hood it:
 
 1. **creates a git worktree** for the PR branch (fetching it if it's remote-only),
-2. **opens a detached tmux window** split into four panes —
+2. **opens a detached window** — a tmux window or a herdr tab — split into four panes —
 
    ```
    ┌─ status ─┬──────── claude ───────┐
@@ -211,13 +219,14 @@ the PR line tracks progress. Under the hood it:
    reviewers/checks, provisioned env), stacked above `setup` (which runs
    inside the worktree), top-right runs `claude` (a live session, ready to
    talk to), and the bottom, full-width pane runs `orbit-diff` on the PR's diff;
-3. **tracks it all** — the PR ↔ worktree ↔ tmux panes ↔ env instance — in a
+3. **tracks it all** — the PR ↔ worktree ↔ panes ↔ env instance — in a
    session registry under `~/.cache/orbit-diff/sessions/` (nothing is written
    into the repo).
 
 Because the diff viewer and Claude run side by side, sending annotations to
 Claude (the **submit** picker's *"Send to Claude pane"*) routes them into that
-open session via `tmux send-keys` instead of taking over the diff — then press
+open session (`tmux send-keys` / `herdr pane send-text`) instead of taking over
+the diff — then press
 `R` in the viewer to reload once Claude has edited. Outside a managed window the
 old behaviour stands (orbit-diff steps aside for a fresh `claude`).
 
@@ -231,7 +240,7 @@ orbit-diff env-report <instance> [--url <url>] [--status ready|failed]
 
 Run from inside the worktree, it's matched to that worktree's session by path.
 
-**Finishing** (`d` on a worktree) closes the tmux window, runs your `done`
+**Finishing** (`d` on a worktree) closes the review window, runs your `done`
 command, then removes the git worktree and drops the session. orbit-diff
 **always** owns worktree removal — `done` only needs to do *your* teardown
 (destroy the provisioned instance, etc.), and it runs first (in the background,
@@ -246,7 +255,7 @@ orbit-diff reset <branch>
 ```
 
 Reset is intentionally destructive to local state. It closes the branch's
-orbit-diff tmux window, force-removes registered or stale worktree directories,
+orbit-diff window, force-removes registered or stale worktree directories,
 prunes Git worktree metadata, deletes the local branch, and clears both
 path-hashed session records and branch-scoped viewer/AI state. The remote branch
 is never changed, so selecting the PR again creates a clean tracking branch and
@@ -269,9 +278,34 @@ export default {
 };
 ```
 
-Starting a review needs to be **inside tmux**. Requires the
+Starting a review needs to be **inside a multiplexer** — either
+[tmux](https://github.com/tmux/tmux) or [herdr](https://herdr.dev). Requires the
 [`gh`](https://cli.github.com) CLI, authenticated (`gh auth login`) with a GitHub
 remote. (`pr.start` is still honoured as a legacy alias for `pr.setup`.)
+
+#### tmux or herdr
+
+orbit-diff drives whichever multiplexer it's already running inside, detected
+from the environment — `HERDR_PANE_ID` for herdr, `TMUX` for tmux. There's
+nothing to configure, and if you're in a tmux session nested inside a herdr pane
+it drives herdr, which is the one that owns the window it would build. Set
+`ORBIT_MUX=tmux|herdr` to force a backend.
+
+The two are equivalent for everything above, with three differences worth
+knowing:
+
+- **Agent state** is reported by herdr rather than scraped off the screen (see
+  above) — more reliable, and it doesn't cost a pane read per tick.
+- **The status pane** is sized as a fraction of the review window under herdr,
+  where tmux pins it to exactly 8 rows. herdr's split API takes ratios only, so
+  on a short terminal that pane can clip where the tmux one wouldn't.
+- **Clipboard** needs no `set-clipboard` setting under herdr: it's the terminal
+  emulator itself, so OSC 52 goes straight through (see below).
+
+The herdr backend is written against herdr's documented CLI but hasn't been
+exercised against a running herdr server yet — if something in the review-window
+flow misbehaves there, that's the place to look, and `ORBIT_MUX=tmux` gets you
+back to the well-worn path.
 
 ## AI review & Q&A
 
@@ -383,7 +417,7 @@ them as inline comments on the branch's GitHub PR, or copy them out.
 Annotations are **in-memory for the session** — they're gone when you quit, so
 copy (or run) before you leave.
 
-### Clipboard over SSH + tmux
+### Clipboard over SSH
 
 The copy uses **OSC 52**, a terminal escape sequence that sets the clipboard on
 the machine your *terminal emulator* runs on — so it works from a tmux session
@@ -392,7 +426,8 @@ know:
 
 - **tmux** must allow it: add `set -g set-clipboard on` to your `~/.tmux.conf`.
   orbit-diff wraps the sequence in tmux's (and GNU screen's) passthrough form
-  automatically.
+  automatically. Under herdr there's nothing to set — it's the terminal emulator
+  rather than a layer inside one, so the sequence goes straight through.
 - **Terminal support varies.** iTerm2, kitty, WezTerm, Alacritty, and Windows
   Terminal honor OSC 52; macOS **Terminal.app does not**, and there's no reply
   to confirm success either way. So `y` **also** writes the prompt to a file under

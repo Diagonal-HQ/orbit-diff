@@ -126,13 +126,14 @@ const { activeBg, selectBg, addBg, delBg } = await detectLineColors();
 
 // Are we the diff pane of a managed review window? If this worktree has a
 // review session with a live Claude pane, the viewer routes annotations there
-// (send-keys) instead of quitting to hand off to a fresh `claude`.
+// instead of quitting to hand off to a fresh `claude`.
 let claudePane = null;
-if (process.env.TMUX) {
+const { inMux } = await import("./src/mux.mjs");
+if (inMux()) {
   try {
     const { repoRoot } = await import("./src/paths.mjs");
     const { sessionForWorktree } = await import("./src/session.mjs");
-    const { paneAlive } = await import("./src/tmux.mjs");
+    const { paneAlive } = await import("./src/mux.mjs");
     const sess = sessionForWorktree(repoRoot());
     const pane = sess?.panes?.claude;
     if (pane && paneAlive(pane)) claudePane = pane;
