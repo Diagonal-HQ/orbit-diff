@@ -313,10 +313,14 @@ knowing:
 in — it closes a worktree's window in either, from a plain shell, since it's
 routinely run from outside both.
 
-The herdr backend is written against herdr's documented CLI but hasn't been
-exercised against a running herdr server yet — if something in the review-window
-flow misbehaves there, that's the place to look, and `ORBIT_MUX=tmux` gets you
-back to the well-worn path.
+The herdr backend is written against herdr's documented CLI and one real
+`pane list` payload, but hasn't been exercised end to end against a running
+herdr server. Where the docs are silent it discovers rather than guesses — it
+finds reported metadata wherever herdr puts it, matches worktrees on a hash as
+well as a path, and checks `focused` after building a review tab so it can put
+the view back if creation ever turns out to steal it. If something in the
+review-window flow still misbehaves there, that's the place to look, and
+`ORBIT_MUX=tmux` gets you back to the well-worn path.
 
 ## AI review & Q&A
 

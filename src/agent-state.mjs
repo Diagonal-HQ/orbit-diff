@@ -111,7 +111,11 @@ export function createAgentPoller({
     }
 
     for (const p of list()) {
-      if (p.role !== "claude") continue;
+      // A pane with no worktree path can't be attributed to a row in the rail.
+      // (The herdr backend reports panes it could only place by hash, so that
+      // window lookup still works; there's nothing for this poller to do with
+      // them.)
+      if (p.role !== "claude" || !p.worktreePath) continue;
       live.add(p.pane);
 
       // The backend told us outright — no screen to read, no cache to keep.

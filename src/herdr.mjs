@@ -140,6 +140,19 @@ function pickField(value, names) {
   return null;
 }
 
+// A named boolean anywhere in an unwrapped payload (`focused`), or null if it
+// isn't there. Separate from pickField, which only reads strings and numbers.
+function pickBool(value, name, depth = 0) {
+  const v = unwrap(value);
+  if (!v || typeof v !== "object" || depth > 3) return null;
+  if (typeof v[name] === "boolean") return v[name];
+  for (const inner of Object.values(v)) {
+    const found = pickBool(inner, name, depth + 1);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
 // An id printed by a create/split call, read out of structured output.
 //
 // `bare` allows the fallback for a command that printed nothing but a single
@@ -157,22 +170,41 @@ function idFrom(stdout, names, { bare = false } = {}) {
   return null;
 }
 
-// Reported tokens on a PaneInfo. The docs confirm tokens come back on
-// `pane.list`/`pane.get` but don't name the field, so check the plausible
-// spots. Values may be bare strings or `{ value, expires_at }` records.
-function tokensOf(pane) {
-  const bag =
-    (pane && pane.tokens) ||
-    (pane && pane.metadata && pane.metadata.tokens) ||
-    (pane && pane.metadata) ||
-    null;
-  if (!bag || typeof bag !== "object") return {};
+const OUR_TOKENS = [TOK_ROLE, TOK_WT, TOK_WTKEY];
+
+// Read a { name: value } bag, or null if it doesn't hold tokens of ours. Values
+// may be bare strings or `{ value, expires_at }` records.
+function asTokenBag(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const out = {};
-  for (const [k, v] of Object.entries(bag)) {
+  for (const [k, v] of Object.entries(value)) {
     if (typeof v === "string") out[k] = v;
     else if (v && typeof v === "object" && typeof v.value === "string") out[k] = v.value;
   }
-  return out;
+  return OUR_TOKENS.some((t) => t in out) ? out : null;
+}
+
+// Our reported tokens, found anywhere in a PaneInfo.
+//
+// The docs confirm tokens come back on `pane.list`/`pane.get` but never name
+// the field they arrive in, and the one real payload we have is from an
+// untagged pane, so it doesn't show one either. Guessing a name would be a
+// single point of failure for the whole backend — get it wrong and no pane is
+// ever found, so no review window can be focused, closed, or deduplicated.
+//
+// So don't guess: walk the object and take the first nested map that actually
+// contains tokens we wrote. That works whether they land at `tokens`,
+// `metadata.tokens`, or namespaced under the reporting source. Bounded to a few
+// levels and to a pane-sized object, so it's cheap enough to do per poll.
+function tokensOf(pane, depth = 0) {
+  if (!pane || typeof pane !== "object" || depth > 3) return null;
+  const here = asTokenBag(pane);
+  if (here) return here;
+  for (const value of Object.values(pane)) {
+    const found = tokensOf(value, depth + 1);
+    if (found) return found;
+  }
+  return null;
 }
 
 // hash → worktree path, over every worktree orbit-diff has a session for. Only
@@ -226,19 +258,24 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     let byKey = null; // built lazily — only if some pane lost its path token
     const out = [];
     for (const p of panes) {
-      const tokens = tokensOf(p);
+      const tokens = tokensOf(p) || {};
       const role = tokens[TOK_ROLE];
       if (!role) continue;
 
+      const worktreeKey = tokens[TOK_WTKEY] || "";
       let worktreePath = tokens[TOK_WT] || "";
-      if (!worktreePath && tokens[TOK_WTKEY]) {
-        if (resolveKey) worktreePath = resolveKey(tokens[TOK_WTKEY]) || "";
+      if (!worktreePath && worktreeKey) {
+        if (resolveKey) worktreePath = resolveKey(worktreeKey) || "";
         else {
           if (!byKey) byKey = sessionPathsByKey();
-          worktreePath = byKey.get(tokens[TOK_WTKEY]) || "";
+          worktreePath = byKey.get(worktreeKey) || "";
         }
       }
-      if (!worktreePath) continue;
+      // A pane we can't place at all is useless. One we can place only by hash
+      // is still worth reporting: `findWindowByWorktree` matches on either, so
+      // focus/close/cleanup keep working even if the path token didn't survive
+      // the round trip. Only the agent glyph needs the path itself.
+      if (!worktreePath && !worktreeKey) continue;
 
       const pane = pickField(p, ["pane_id", "id"]);
       if (!pane) continue;
@@ -255,6 +292,7 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
         pane,
         role,
         worktreePath,
+        worktreeKey,
         command: agent,
         activity: pickField(p, ["revision"]) || "",
         window: pickField(p, ["tab_id"]) || "",
@@ -266,9 +304,17 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
 
   // The tab id holding this worktree's panes, or null. Scans every workspace,
   // matching tmux's `list-windows -a`.
+  //
+  // Matches on the path token OR its hash. The hash is 16 hex characters and
+  // can't be mangled by any plausible token-value limit, so this keeps working
+  // even if long slash-bearing paths turn out not to round-trip — which is the
+  // difference between "the agent glyph is missing" and "reviews can never be
+  // re-focused, closed, or cleaned up".
   const findWindowByWorktree = (path) => {
+    const key = sessionKey(path);
     for (const p of listTaggedPanes()) {
-      if (p.worktreePath === path && p.window) return p.window;
+      if (!p.window) continue;
+      if (p.worktreePath === path || p.worktreeKey === key) return p.window;
     }
     return null;
   };
@@ -372,9 +418,34 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   // herdr's `pane focus` is directional only — you can't focus a pane by id —
   // so there's no way to set it without risking the same steal. Landing on the
   // wrong pane is a keystroke; stealing focus mid-review is not.
-  const buildReviewWindow = ({ worktreePath, name, statusCmd, setupCmd, claudeCmd, diffCmd }) => {
-    if (!inMux()) return { error: "not inside herdr — start herdr to open a review window" };
+  // Put the view back if building a review tab moved it.
+  //
+  // herdr's docs say creation and splitting "leave focus unchanged", and we
+  // pass `--no-focus` everywhere, so this should never fire. But the whole
+  // background-review contract rests on that being true, it's the single most
+  // disruptive way for this backend to be wrong, and it has never been checked
+  // against a live server. PaneInfo carries `focused`, so verifying costs one
+  // call once per review start rather than trusting a doc sentence.
+  //
+  // Silent when it can't tell: no env ids, no answer from `pane get`, or no
+  // `focused` field means we leave well alone rather than yank the view.
+  const restoreFocus = () => {
+    const homeTab = env.HERDR_TAB_ID;
+    const homePane = env.HERDR_PANE_ID;
+    if (!homeTab || !homePane) return;
+    const res = run(["pane", "get", homePane]);
+    if (res.status !== 0) return;
+    if (pickBool(parseJson(res.stdout), "focused") === false) run(["tab", "focus", homeTab]);
+  };
 
+  const buildReviewWindow = (opts) => {
+    if (!inMux()) return { error: "not inside herdr — start herdr to open a review window" };
+    const built = buildReviewTab(opts);
+    restoreFocus();
+    return built;
+  };
+
+  const buildReviewTab = ({ worktreePath, name, statusCmd, setupCmd, claudeCmd, diffCmd }) => {
     const created = run([
       "tab", "create", "--cwd", worktreePath, "--label", name || "review", "--no-focus",
     ]);
@@ -444,7 +515,7 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   const nativeAgentStates = () => {
     const byPath = {};
     for (const p of listTaggedPanes()) {
-      if (p.role !== "claude") continue;
+      if (p.role !== "claude" || !p.worktreePath) continue;
       const state = AGENT_STATE[p.agentStatus];
       if (state) byPath[p.worktreePath] = state;
     }

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHerdrBackend } from "./herdr.mjs";
+import { sessionKey } from "./session.mjs";
 
 // herdr isn't running in CI (or, usually, on the machine you're developing on),
 // so every test here drives the backend through an injected `run` that stands in
@@ -136,13 +137,62 @@ test("a worktree path that didn't survive as a token resolves through its hash",
   expect(h.listTaggedPanes()[0].worktreePath).toBe("/wt/feature");
 });
 
-test("a pane we can't place is skipped rather than reported under a blank path", () => {
+// If a long slash-bearing path turns out not to survive as a token value, the
+// 16-hex-char hash still identifies the worktree. Losing the agent glyph is
+// survivable; losing the ability to focus, close, or clean up a review is not.
+test("a pane placeable only by hash is still findable, just not glyphable", () => {
+  const wt = "/wt/feature";
   const payload = JSON.stringify({
-    panes: [{ pane_id: "w1:p2", tokens: { orbit_role: "claude", orbit_wtkey: "nope" } }],
+    panes: [{
+      pane_id: "w1:p2", tab_id: "t1", agent_status: "working",
+      tokens: { orbit_role: "claude", orbit_wtkey: sessionKey(wt) },
+    }],
   });
   const { run } = fakeHerdr([[is("pane", "list"), payload]]);
   const h = createHerdrBackend({ run, env: IN_HERDR, resolveKey: () => null });
-  expect(h.listTaggedPanes()).toEqual([]);
+
+  expect(h.findWindowByWorktree(wt)).toBe("t1"); // matched on the hash
+  expect(h.listTaggedPanes()[0].worktreePath).toBe("");
+  expect(h.nativeAgentStates()).toEqual({}); // no path to key a glyph on
+});
+
+test("a pane with no worktree token at all is dropped", () => {
+  const payload = JSON.stringify({
+    panes: [{ pane_id: "w1:p2", tokens: { orbit_role: "claude" } }],
+  });
+  const { run } = fakeHerdr([[is("pane", "list"), payload]]);
+  expect(createHerdrBackend({ run, env: IN_HERDR }).listTaggedPanes()).toEqual([]);
+});
+
+// The field tokens arrive in is undocumented, and the one real payload we have
+// is from an untagged pane so it doesn't reveal one. Guessing wrong would mean
+// no pane is ever found — the whole backend dead. So the lookup searches
+// instead of guessing.
+test("tokens are found wherever herdr puts them", () => {
+  const tokens = { orbit_role: "claude", orbit_wt: "/wt/a" };
+  const shapes = [
+    { pane_id: "p", tokens },                                  // the guess
+    { pane_id: "p", metadata: { tokens } },                    // one level down
+    { pane_id: "p", metadata: tokens },                        // no inner "tokens"
+    { pane_id: "p", metadata: { "orbit-diff": { tokens } } },  // namespaced by source
+    { pane_id: "p", reported: { by_source: { "orbit-diff": tokens } } }, // unguessable
+    // Values as { value, expires_at } records rather than bare strings.
+    { pane_id: "p", tokens: { orbit_role: { value: "claude" }, orbit_wt: { value: "/wt/a" } } },
+  ];
+  for (const pane of shapes) {
+    const { run } = fakeHerdr([[is("pane", "list"), JSON.stringify({ panes: [pane] })]]);
+    const found = createHerdrBackend({ run, env: IN_HERDR }).listTaggedPanes();
+    expect(found).toHaveLength(1);
+    expect(found[0].worktreePath).toBe("/wt/a");
+  }
+});
+
+test("an unrelated pane's own metadata is not mistaken for ours", () => {
+  const payload = JSON.stringify({
+    panes: [{ pane_id: "p", tab_id: "t", metadata: { tokens: { build: "green", pid: "412" } } }],
+  });
+  const { run } = fakeHerdr([[is("pane", "list"), payload]]);
+  expect(createHerdrBackend({ run, env: IN_HERDR }).listTaggedPanes()).toEqual([]);
 });
 
 test("findWindowByWorktree returns the tab holding that worktree's panes", () => {
@@ -362,4 +412,64 @@ test("an id printed bare, tmux-style, is accepted as well as a JSON one", () => 
   // `tab create` printed only the tab id, so the pane was found by listing.
   expect(built.panes.status).toBe("w9:p1");
   expect(built.panes.diff).toBe("w9:p2");
+});
+
+// ---- focus guard ----
+//
+// The background-review contract is the most disruptive thing this backend can
+// get wrong, and `--no-focus` has never been verified against a live server.
+// PaneInfo carries `focused`, so building a review tab checks rather than trusts.
+
+const IN_HERDR_FULL = { HERDR_PANE_ID: "w1:p1", HERDR_TAB_ID: "w1:t1" };
+
+// A fake that builds a tab successfully and answers `pane get` with `focused`.
+function buildingHerdr(focusedAfter) {
+  const calls = [];
+  const run = (args) => {
+    calls.push(args);
+    if (args[0] === "tab" && args[1] === "create") {
+      return { status: 0, stdout: JSON.stringify({ result: { tab_id: "w1:t9", pane_id: "w1:p9" } }), stderr: "" };
+    }
+    if (args[1] === "split") {
+      return { status: 0, stdout: JSON.stringify({ result: { pane_id: `w1:s${calls.length}` } }), stderr: "" };
+    }
+    if (args[1] === "get") {
+      return { status: 0, stdout: JSON.stringify({ result: { pane_id: "w1:p1", focused: focusedAfter } }), stderr: "" };
+    }
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  return { run, calls };
+}
+
+test("if building a review tab stole focus, the view is put back", () => {
+  const { run, calls } = buildingHerdr(false);
+  createHerdrBackend({ run, env: IN_HERDR_FULL }).buildReviewWindow({ worktreePath: "/wt/x" });
+  expect(calls.some((c) => c[0] === "tab" && c[1] === "focus" && c[2] === "w1:t1")).toBe(true);
+});
+
+test("if focus never moved, nothing is refocused", () => {
+  const { run, calls } = buildingHerdr(true);
+  createHerdrBackend({ run, env: IN_HERDR_FULL }).buildReviewWindow({ worktreePath: "/wt/x" });
+  expect(calls.some((c) => c[1] === "focus")).toBe(false);
+});
+
+test("when herdr won't say whether we're focused, the view is left alone", () => {
+  const calls = [];
+  const run = (args) => {
+    calls.push(args);
+    if (args[0] === "tab" && args[1] === "create") {
+      return { status: 0, stdout: JSON.stringify({ result: { tab_id: "w1:t9", pane_id: "w1:p9" } }), stderr: "" };
+    }
+    if (args[1] === "split") return { status: 0, stdout: JSON.stringify({ result: { pane_id: "w1:s1" } }), stderr: "" };
+    if (args[1] === "get") return { status: 1, stdout: "", stderr: "nope" }; // no answer
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  createHerdrBackend({ run, env: IN_HERDR_FULL }).buildReviewWindow({ worktreePath: "/wt/x" });
+  expect(calls.some((c) => c[1] === "focus")).toBe(false);
+});
+
+test("the guard is skipped entirely when herdr didn't export our tab id", () => {
+  const { run, calls } = buildingHerdr(false);
+  createHerdrBackend({ run, env: { HERDR_PANE_ID: "w1:p1" } }).buildReviewWindow({ worktreePath: "/wt/x" });
+  expect(calls.some((c) => c[1] === "get" || c[1] === "focus")).toBe(false);
 });
