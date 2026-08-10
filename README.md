@@ -90,7 +90,7 @@ orbit-diff main..feature    # a branch range, PR-style
 | `[` / `]` | narrow / widen the file rail (responsive default until adjusted) |
 | `↑↓` / `j` `k` | move file (rail) · move the line cursor (diff) |
 | `PgUp/PgDn` / `Ctrl-u` `Ctrl-d` | move the cursor a page — **works from either pane** |
-| `g` / `G` | jump the cursor to top / bottom — **works from either pane** |
+| `t` / `G` | jump the cursor to top / bottom — **works from either pane** |
 | `/` | filter files (fuzzy subsequence on path) |
 | `f` | find in diff contents — matches every line, context included |
 | `Tab` (while finding) | toggle search scope: **whole diff** ⇄ **focused file** |
@@ -102,6 +102,7 @@ orbit-diff main..feature    # a branch range, PR-style
 | `o` | open this branch's GitHub PR in the browser (when one exists) |
 | `y` | copy all annotations to the clipboard as a change-request prompt for Claude Code |
 | `r` | open the **submit** picker: apply via Claude Code (or *send to the Claude pane* in a managed review window), post to the GitHub PR (when one exists), or copy |
+| `g` | **finish the review** — approve, approve + merge when ready, or request changes (see below; only when this branch has an open PR) |
 | `R` | reload the diff — pick up edits Claude made in its pane |
 | `A` | **AI review** of the diff — findings stream into a side panel (`↑↓`/`j` `k` move · `Enter` jump to it · `p` promote to an annotation · `Esc` close) |
 | `?` | **ask** the model a question about the diff / codebase — the answer streams into a panel (`Ctrl-u`/`Ctrl-d` scroll the transcript · `Tab` past conversations · `Esc` close) |
@@ -451,6 +452,32 @@ them as inline comments on the branch's GitHub PR, or copy them out.
 
 Annotations are **in-memory for the session** — they're gone when you quit, so
 copy (or run) before you leave.
+
+### Finishing a review (`g`)
+
+When the branch has an open PR, `g` opens a small menu for the verdict itself.
+Every row is outward-facing and can't be undone from here, so picking a row *is*
+the confirmation and each one spells out its full set of side effects:
+
+| Row | What it does |
+| --- | --- |
+| **Approve** | approves the PR, then unassigns you — it's off your plate |
+| **Approve & merge when ready** | approves and turns on GitHub auto-merge. You stay assigned, since you're the one watching it land |
+| **Request changes** | submits every annotation as inline comments on **one** review with the *requested changes* verdict, then unassigns you and assigns the PR's author |
+
+"You" is whoever `gh` is authenticated as, so this needs no configuration.
+
+Request changes posts a single review rather than the scatter of standalone
+comments `r` → *Post to GitHub PR* produces — that's what makes it land as one
+"requested changes" entry in the PR timeline. The trade is that GitHub rejects
+the whole review if any comment can't be anchored to the pushed head, where the
+`r` path posts what it can and reports the rest; the tally afterwards tells you
+which happened. Requesting changes with nothing annotated is allowed and submits
+the verdict on its own.
+
+Auto-merge picks a merge method from `pr.mergeMethod` (`"squash"` / `"merge"` /
+`"rebase"`). Left empty, it asks the repo which methods it allows and prefers
+squash — so it won't fail on a repo that has squash-merging turned off.
 
 ### Clipboard over SSH
 

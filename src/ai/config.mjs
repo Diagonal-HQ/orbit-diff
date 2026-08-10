@@ -51,6 +51,9 @@ export const DEFAULTS = {
   //             orbit-diff always removes the git worktree itself, after `done`
   //             runs — so `done` only needs your custom teardown, not worktree
   //             bookkeeping. Leave empty if there's nothing to tear down.
+  //   mergeMethod — how "Approve & merge when ready" (`g` in the viewer) lands
+  //             a PR: "squash" | "merge" | "rebase". Empty = ask the repo what
+  //             it allows and prefer squash.
   //   worktreeDir — where to create worktrees. Tokens {repo} {branch} {base}
   //             {number}; `~` expands. Empty = sibling `<repo>-worktrees/<branch>`.
   //   start   — legacy alias for `setup` (still honoured when `setup` is empty).
@@ -61,6 +64,7 @@ export const DEFAULTS = {
     claude: "claude",
     codex: "codex",
     done: "",
+    mergeMethod: "",
     worktreeDir: "",
     worktreeRefreshMinutes: 2,
   },
@@ -103,6 +107,8 @@ export default {
     codex: "codex", //  a second agent, in its own tab. herdr only
     done: "", //   e.g. "tear-down {branch}" — YOUR env teardown; orbit-diff always
     //             removes the git worktree itself afterwards
+    mergeMethod: "", // "squash" | "merge" | "rebase" for \`g\`'s approve-and-merge;
+    //             empty asks the repo what it allows and prefers squash
     worktreeDir: "", // where worktrees go; tokens {repo} {branch} {base} {number},
     //             \`~\` expands. Empty = sibling "<repo>-worktrees/<branch>"
     worktreeRefreshMinutes: 2, // auto-refresh the worktrees pane (0 disables)
@@ -177,6 +183,10 @@ export async function loadConfig() {
   // plain shell for anyone who doesn't use a second agent.
   merged.pr.codex = typeof merged.pr.codex === "string" ? merged.pr.codex : DEFAULTS.pr.codex;
   merged.pr.done = typeof merged.pr.done === "string" ? merged.pr.done : "";
+  // Anything unrecognized falls back to "" — auto-detect — rather than being
+  // passed to `gh pr merge` as a bogus flag.
+  const mm = String(merged.pr.mergeMethod || "").trim().toLowerCase();
+  merged.pr.mergeMethod = ["squash", "merge", "rebase"].includes(mm) ? mm : "";
   merged.pr.worktreeDir = typeof merged.pr.worktreeDir === "string" ? merged.pr.worktreeDir : "";
   const wtMin = Number(merged.pr.worktreeRefreshMinutes);
   merged.pr.worktreeRefreshMinutes = Number.isFinite(wtMin) && wtMin >= 0 ? wtMin : DEFAULTS.pr.worktreeRefreshMinutes;

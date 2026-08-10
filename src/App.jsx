@@ -13,10 +13,11 @@ import { AskPanel, askPanelMetrics, flattenAskRows } from "./AskPanel.jsx";
 import { useDimensions } from "./useDimensions.mjs";
 import { copyViaOSC52, copyEverywhere } from "./clipboard.mjs";
 import { useMouseSelection } from "./mouse-select.mjs";
+import { navStep } from "./keys.mjs";
 import { sendLine, paneAlive } from "./mux.mjs";
 import { FALLBACK } from "./theme.mjs";
 import { openUrl } from "./platform.mjs";
-import { detectPR, submitAnnotations } from "./github.mjs";
+import { detectPR, submitAnnotations, approvePR, requestChanges } from "./github.mjs";
 import { findingToAnnotation, reserveFindingIds } from "./ai/findings.mjs";
 import {
   makeAnnotation,
@@ -37,6 +38,7 @@ import { fileDigest } from "./ai/cache.mjs";
 
 // Modes: "normal" | "files" (filter sidebar) | "lines" (find in changed lines)
 //        "comment" (type an annotation) | "submit" (choose where annotations go)
+//        "verdict" (approve / request changes on the PR)
 //        "reviewConfirm" (confirm kicking off an AI review) | "ask" (ask the model)
 // AI review findings are no longer a separate panel — they stream into the rail's
 // "AI Review" section (below Annotations) and navigate like everything else.
@@ -91,6 +93,10 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   const [pr, setPr] = useState(null); // open PR for this branch, once detected
   const [submitSel, setSubmitSel] = useState(0); // highlighted picker row
   const [posting, setPosting] = useState(false); // a GitHub submit is in flight
+
+  // ---- Review verdicts (`g`) ----
+  const [verdictSel, setVerdictSel] = useState(0); // highlighted verdict row
+  const [verdictBusy, setVerdictBusy] = useState(false); // a verdict is in flight
 
   // ---- AI reviewer + Q&A ----
   // Findings persist too, so the AI Review section (and each finding's promoted
@@ -250,7 +256,12 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   // The ask panel (streamed answer) wants a bit more room to read.
   const aiW = clamp(sideW ?? Math.floor(cols * 0.42), 34, sideMax);
   const isAiPanel = mode === "ask";
-  const leftW = mode === "comment" || mode === "submit" || mode === "reviewConfirm" ? editorW : isAiPanel ? aiW : sidebarW;
+  const leftW =
+    mode === "comment" || mode === "submit" || mode === "verdict" || mode === "reviewConfirm"
+      ? editorW
+      : isAiPanel
+        ? aiW
+        : sidebarW;
   const diffW = cols - leftW;
   // Panels + status bar total rows-1, leaving one spare terminal row. Rendering
   // the *full* height makes the terminal scroll each frame, which drops Ink out
@@ -553,6 +564,93 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       .finally(() => setPosting(false));
   };
 
+  // ---- Review verdicts (`g`) ----
+
+  // The three ways to finish a review. Labels spell out every side effect,
+  // because picking a row IS the confirmation — these are outward-facing and
+  // can't be undone from here.
+  const verdictOptions = useMemo(() => {
+    const withText = annotations.filter((a) => a.text.trim()).length;
+    const note = withText
+      ? `submit ${withText} annotation${withText === 1 ? "" : "s"} as one review`
+      : "submit a review with no comments";
+    return [
+      {
+        key: "approve",
+        label: "Approve",
+        hint: "approve the PR and unassign yourself",
+      },
+      {
+        key: "approveMerge",
+        label: "Approve & merge when ready",
+        hint: "approve and enable auto-merge; you stay assigned to watch it land",
+      },
+      {
+        key: "requestChanges",
+        label: "Request changes",
+        hint: `${note}, then reassign to the author`,
+      },
+    ];
+  }, [annotations]);
+
+  // `g`. Needs a PR to act on, and refuses to stack two verdicts.
+  const openVerdict = () => {
+    if (!pr) return setToast("no open PR for this branch");
+    if (verdictBusy) return setToast("still submitting a review…");
+    if (posting) return setToast("still posting to the PR…");
+    setVerdictSel(0);
+    setMode("verdict");
+  };
+
+  // Approve, optionally enabling auto-merge. Async like the submit path: back to
+  // normal mode with a progress toast, then a report of what actually happened.
+  const runApprove = (merge) => {
+    if (!pr) return;
+    setMode("normal");
+    setVerdictBusy(true);
+    setToast(merge ? `approving PR #${pr.number} + auto-merge…` : `approving PR #${pr.number}…`);
+    approvePR(pr, { merge, mergeMethod: configRef.current?.pr?.mergeMethod || "" })
+      .then((res) => {
+        if (!res.ok) return setToast(`approve failed: ${res.error}`);
+        const parts = [`approved PR #${pr.number}`];
+        if (res.autoMerge) parts.push(`auto-merge on (${res.method})`);
+        if (res.unassigned) parts.push("unassigned you");
+        setToast([...parts, ...res.warnings].join(" · "));
+      })
+      .catch((e) => setToast(`approve failed: ${e.message}`))
+      .finally(() => setVerdictBusy(false));
+  };
+
+  // Request changes: annotations become inline comments on one review, then the
+  // PR goes back to its author.
+  const runRequestChanges = () => {
+    if (!pr) return;
+    setMode("normal");
+    setVerdictBusy(true);
+    setToast(`requesting changes on PR #${pr.number}…`);
+    requestChanges(pr, annotations, files)
+      .then((res) => {
+        if (!res.ok) return setToast(`request changes failed: ${res.error}`);
+        const parts = [`requested changes on PR #${pr.number}`];
+        if (res.posted) parts.push(`${res.posted} comment${res.posted === 1 ? "" : "s"}`);
+        if (res.skipped) parts.push(`${res.skipped} unmappable`);
+        if (res.reassigned) parts.push(`assigned ${res.author}`);
+        setToast([...parts, ...res.warnings].join(" · "));
+      })
+      .catch((e) => setToast(`request changes failed: ${e.message}`))
+      .finally(() => setVerdictBusy(false));
+  };
+
+  // Run whatever the verdict menu's highlighted row is.
+  const chooseVerdict = () => {
+    const opt = verdictOptions[clamp(verdictSel, 0, verdictOptions.length - 1)];
+    setMode("normal");
+    if (!opt) return;
+    if (opt.key === "approve") return runApprove(false);
+    if (opt.key === "approveMerge") return runApprove(true);
+    if (opt.key === "requestChanges") return runRequestChanges();
+  };
+
   // Run whatever the picker's highlighted row is.
   const chooseSubmit = () => {
     const opt = submitOptions[clamp(submitSel, 0, submitOptions.length - 1)];
@@ -801,6 +899,17 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
 
   useInput((input, key) => {
     // ---- Submit target picker ----
+    if (mode === "verdict") {
+      if (key.escape) return setMode("normal");
+      if (key.return) return chooseVerdict();
+      // navStep, not `input === "j"`: two fast presses arrive as one "jj" chunk,
+      // and dropping them here would leave the highlight on a row you'd already
+      // moved past — then Enter fires THAT row. Every row here is irreversible.
+      const step = navStep(input, key);
+      if (step) return setVerdictSel((v) => clamp(v + step, 0, verdictOptions.length - 1));
+      return;
+    }
+
     if (mode === "submit") {
       if (key.escape) return setMode("normal");
       if (key.return) return chooseSubmit();
@@ -1001,7 +1110,11 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       return moveCursor(wrapLines && selectedFile ? pageMove(selectedFile.lines, cursor, inner, rowW, numW, -1) : cursor - page);
     if (key.pageDown || (key.ctrl && input === "d"))
       return moveCursor(wrapLines && selectedFile ? pageMove(selectedFile.lines, cursor, inner, rowW, numW, +1) : cursor + page);
-    if (input === "g") return moveCursor(0);
+    // `g` used to be jump-to-top; it opens the review-verdict menu now, so top
+    // moved to `t`. (Ink reports no Home/End key, so there's no neutral key to
+    // put it on — see the Key interface in ink's use-input.)
+    if (input === "g") return openVerdict();
+    if (input === "t") return moveCursor(0);
     if (input === "G") return moveCursor(total - 1);
 
     // Line-granular ↑↓/jk are pane-sensitive: move files vs. move the cursor.
@@ -1078,6 +1191,14 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
             width={leftW}
             height={bodyH}
           />
+        ) : mode === "verdict" ? (
+          <VerdictMenu
+            options={verdictOptions}
+            selected={clamp(verdictSel, 0, verdictOptions.length - 1)}
+            pr={pr}
+            width={leftW}
+            height={bodyH}
+          />
         ) : mode === "reviewConfirm" ? (
           <ReviewConfirmMenu
             verb={findings.length ? "Re-run" : "Run"}
@@ -1120,7 +1241,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
         <DiffPanel
           file={selectedFile}
           scroll={scroll}
-          focused={focus === "diff" && mode !== "files" && mode !== "comment" && mode !== "submit" && mode !== "reviewConfirm" && mode !== "ask"}
+          focused={focus === "diff" && mode !== "files" && mode !== "comment" && mode !== "submit" && mode !== "verdict" && mode !== "reviewConfirm" && mode !== "ask"}
           width={diffW}
           height={bodyH}
           query={lineQuery}
@@ -1150,6 +1271,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
         line={cursor + 1}
         lineTotal={total}
         annCount={annotations.length}
+        hasPr={!!pr}
         reviewCount={findings.length}
         fileCount={files.length}
         commentTarget={commentTarget}
@@ -1164,6 +1286,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
 function StatusBar({
   mode, source, fileQuery, lineQuery, scope, matches, matchIdx, focus, section,
   line, lineTotal, annCount, reviewCount, fileCount, commentTarget, selectionRange, askShowHistory, toast,
+  hasPr = false,
 }) {
   if (mode === "files") {
     return <Bar><Text color="cyan">filter files</Text> <Text>{fileQuery}</Text><Text inverse> </Text><Dim> · enter to apply · esc to clear</Dim></Bar>;
@@ -1179,6 +1302,9 @@ function StatusBar({
   }
   if (mode === "submit") {
     return <Bar><Text color="cyan">submit</Text><Dim> · choose a target in the panel · ↑↓ move · enter choose · esc cancel</Dim></Bar>;
+  }
+  if (mode === "verdict") {
+    return <Bar><Text color="magenta">review verdict</Text><Dim> · choose in the panel · ↑↓ move · enter submit · esc cancel</Dim></Bar>;
   }
   if (mode === "reviewConfirm") {
     return <Bar><Text color="blueBright">AI review</Text><Dim> · confirm in the panel · </Dim><Text color="green">enter</Text><Dim> run · esc cancel</Dim></Bar>;
@@ -1217,6 +1343,7 @@ function StatusBar({
         <><Text color="green">c</Text><Dim> note · </Dim><Text color="green">v</Text><Dim> sel · </Dim></>
       )}
       <Text color="green">a</Text><Dim> notes · </Dim>
+      {hasPr ? <><Text color="magenta">g</Text><Dim> review · </Dim></> : null}
       <Text color="green">o</Text><Dim> open PR · </Dim>
       <Text color="blueBright">A</Text><Dim> ai · </Dim>
       <Text color="blueBright">?</Text><Dim> ask · </Dim>
@@ -1274,6 +1401,35 @@ function SubmitMenu({ options, selected, count, width, height }) {
         })}
       </Box>
       <Text dimColor wrap="truncate">↑↓ move · enter choose · esc cancel</Text>
+    </Box>
+  );
+}
+
+// Left-column menu (mode === "verdict") for finishing a review on the PR.
+// Deliberately the loudest panel in the viewer: every row here is outward-facing
+// and can't be taken back, so picking a row is the confirmation and each hint
+// spells out the full set of side effects.
+function VerdictMenu({ options, selected, pr, width, height }) {
+  return (
+    <Box flexDirection="column" width={width} height={height} borderStyle="round" borderColor="magenta" paddingX={1}>
+      <Text bold color="magenta" wrap="truncate">
+        Review PR #{pr ? pr.number : "?"}
+      </Text>
+      <Box marginTop={1} flexDirection="column" flexGrow={1}>
+        {options.map((o, i) => {
+          const on = i === selected;
+          return (
+            <Box key={o.key} flexDirection="column" marginBottom={1}>
+              <Text color={on ? "magenta" : undefined} inverse={on} wrap="truncate">
+                {on ? "❯ " : "  "}
+                {o.label}
+              </Text>
+              <Text dimColor wrap="wrap">{"    " + o.hint}</Text>
+            </Box>
+          );
+        })}
+      </Box>
+      <Text dimColor wrap="truncate">↑↓ move · enter submit · esc cancel</Text>
     </Box>
   );
 }
