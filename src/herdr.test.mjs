@@ -7,7 +7,7 @@ import { sessionKey } from "./session.mjs";
 // for the CLI. That covers the argument-building and parsing — the parts we can
 // be sure about — and deliberately not the parts that depend on a live server.
 //
-// A worktree's review is a herdr WORKSPACE of four tabs, so "window" ids in
+// A worktree's review is a herdr WORKSPACE of three tabs, so "window" ids in
 // this backend are workspace ids. See the header of herdr.mjs for why.
 
 const IN_HERDR = { HERDR_PANE_ID: "w1:p1" };
@@ -338,7 +338,7 @@ function buildingHerdr({ focusedAfter = null } = {}) {
   return { run, calls };
 }
 
-test("a review is a workspace of four single-pane tabs", () => {
+test("a review is a workspace of three tabs, agents sharing the middle one", () => {
   const { run, calls } = buildingHerdr();
   const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({
     worktreePath: "/wt/feature",
@@ -353,15 +353,18 @@ test("a review is a workspace of four single-pane tabs", () => {
   expect(built.window).toBe("w5"); // the workspace
   expect(Object.keys(built.panes).sort()).toEqual(["claude", "codex", "diff", "setup"]);
 
-  // Nothing is split any more: every tab is one full-size pane. A diff wants
-  // the width, an agent is a conversation, build output scrolls.
-  expect(calls.filter((c) => c[1] === "split")).toHaveLength(0);
-
-  // The workspace's own first tab is the diff; the other three are created.
+  // The workspace's own first tab is the diff; two more are created.
   expect(built.panes.diff).toBe("w5:p1");
   const tabs = calls.filter((c) => is("tab", "create")(c));
-  expect(tabs.map((t) => t[t.indexOf("--label") + 1])).toEqual(["claude", "codex", "setup"]);
+  expect(tabs.map((t) => t[t.indexOf("--label") + 1])).toEqual(["agents", "setup"]);
   for (const t of tabs) expect(t[t.indexOf("--workspace") + 1]).toBe("w5");
+
+  // Exactly one split, and it's the agents' tab down the middle.
+  const splits = calls.filter((c) => c[1] === "split");
+  expect(splits).toHaveLength(1);
+  expect(splits[0][2]).toBe(built.panes.claude); // claude keeps the left
+  expect(splits[0]).toContain("right");
+  expect(splits[0][splits[0].indexOf("--ratio") + 1]).toBe("0.50");
 
   // Every command lands in the right place.
   const ran = calls.filter((c) => c[1] === "run").map((c) => [c[2], c[3]]);
@@ -371,6 +374,22 @@ test("a review is a workspace of four single-pane tabs", () => {
     [built.panes.codex, "codex"],
     [built.panes.setup, "make setup"],
   ]);
+});
+
+test("a failed agent split reports the workspace so it can still be closed", () => {
+  const calls = [];
+  const run = (args) => {
+    calls.push(args);
+    if (is("workspace", "create")(args)) {
+      return { status: 0, stdout: reply("workspace_create", { workspace_id: "w5", pane_id: "w5:p1" }), stderr: "" };
+    }
+    if (is("tab", "create")(args)) return { status: 0, stdout: reply("tab_create", { pane_id: "w5:t1p" }), stderr: "" };
+    if (args[1] === "split") return { status: 1, stdout: "", stderr: "no room" };
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/x" });
+  expect(built.error).toBe("no room");
+  expect(built.window).toBe("w5");
 });
 
 // The pr-status pane is gone: `G` covers it, with room to render it properly.

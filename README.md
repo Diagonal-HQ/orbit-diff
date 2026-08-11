@@ -296,18 +296,18 @@ it drives herdr, which is the one that owns the window it would build. Set
 `ORBIT_MUX=tmux|herdr` to force a backend.
 
 **The review environment is shaped differently.** Under tmux a review is one
-window of four panes. Under herdr it's a **workspace of four single-pane tabs**:
+window of four panes. Under herdr it's a **workspace of three tabs**:
 
 ```
 tab 1 "review"   orbit-diff, the whole tab
-tab 2 "claude"   the Claude CLI
-tab 3 "codex"    the Codex CLI      (set `pr.codex`)
-tab 4 "setup"    your provisioning script
+tab 2 "agents"   claude │ codex, side by side   (set `pr.codex`)
+tab 3 "setup"    your provisioning script
 ```
 
-Nothing is split. Each of these is something you sit in and use full-size — a
-diff wants the width, an agent is a conversation, build output scrolls — so
-slicing a tab into thirds only made all three worse.
+The agents share a tab because they're a pair you compare — both on screen beats
+tabbing between them. Everything else gets a whole tab: a diff wants the width,
+build output scrolls. That's the only split, and slicing tab 1 into thirds as
+well only made all three of its occupants worse.
 
 There's no `orbit-diff pr-status` panel under herdr: the viewer's `G` overview
 covers the same ground with room to render it, and the provisioned environment

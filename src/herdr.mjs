@@ -532,13 +532,14 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   // tabs:
   //
   //   tab 1 "review"  orbit-diff, the whole tab
-  //   tab 2 "claude"  the Claude CLI
-  //   tab 3 "codex"   the Codex CLI
-  //   tab 4 "setup"   the provisioning script
+  //   tab 2 "agents"  claude │ codex, side by side
+  //   tab 3 "setup"   the provisioning script
   //
-  // No splits at all. Each of these is something you sit in and use full-size —
-  // a diff wants the width, an agent is a conversation, and build output scrolls
-  // — so slicing the first tab into thirds only made all three worse.
+  // The only split left is the one between the two agents, and it earns its
+  // place: they're a pair you compare, so having both on screen beats tabbing
+  // between them. Everything else gets a whole tab — a diff wants the width,
+  // build output scrolls — which is why slicing tab 1 into thirds made all
+  // three of its occupants worse.
   //
   // There used to be a fifth thing here, an `orbit-diff pr-status` pane showing
   // branch/PR/checks/env. The viewer's `G` overview covers all of it and more,
@@ -575,12 +576,28 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     tag(diffPane, "diff", worktreePath);
 
     const panes = { diff: diffPane };
-    for (const [role, label] of [["claude", "claude"], ["codex", "codex"], ["setup", "setup"]]) {
-      const tab = addTab(window, worktreePath, label);
-      if (tab.error) return { error: tab.error, window };
-      tag(tab.pane, role, worktreePath);
-      panes[role] = tab.pane;
-    }
+
+    // Tab 2: both agents, an even left/right split.
+    const agents = addTab(window, worktreePath, "agents");
+    if (agents.error) return { error: agents.error, window };
+    tag(agents.pane, "claude", worktreePath);
+    panes.claude = agents.pane;
+
+    const right = run([
+      "pane", "split", agents.pane, "--direction", "right", "--ratio", "0.50",
+      "--cwd", worktreePath, "--no-focus",
+    ]);
+    if (right.status !== 0) return { error: (right.stderr || "herdr pane split failed").trim(), window };
+    const codexPane = idFrom(right.stdout, ["pane_id", "id"], { bare: true });
+    if (!codexPane) return { error: "couldn't parse the herdr pane id", window };
+    tag(codexPane, "codex", worktreePath);
+    panes.codex = codexPane;
+
+    // Tab 3: the provisioning script.
+    const setup = addTab(window, worktreePath, "setup");
+    if (setup.error) return { error: setup.error, window };
+    tag(setup.pane, "setup", worktreePath);
+    panes.setup = setup.pane;
 
     if (diffCmd) runInPane(panes.diff, diffCmd);
     if (claudeCmd) runInPane(panes.claude, claudeCmd);
