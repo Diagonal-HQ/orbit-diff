@@ -239,8 +239,41 @@ export async function prOverview(number = null, { withActivity = false } = {}) {
   }
   const checkRuns = latestChecks(pr.statusCheckRollup);
   const out = { ...pr, checkRuns, checks: summarizeChecks(checkRuns) };
-  if (withActivity) out.activity = buildActivity(pr, await inlineComments(pr));
+  if (withActivity) {
+    const [inline, threads] = await Promise.all([inlineComments(pr), reviewThreads(pr)]);
+    out.activity = buildActivity(pr, inline);
+    out.threads = threads;
+  }
   return out;
+}
+
+// Review threads with their resolved state. Unresolved ones block the merge
+// button in most protected repos and are the single most common "why is this
+// stuck" answer — and they appear in NO `gh pr view --json` field, so this is a
+// GraphQL call. Resolves null (not []) when it fails, so the caller can tell
+// "none unresolved" apart from "couldn't look".
+async function reviewThreads(pr) {
+  const repo = repoFromUrl(pr.url);
+  if (!repo || !pr.number) return null;
+  const [owner, name] = repo.split("/");
+  const res = await gh([
+    "api", "graphql",
+    "-f", `query=query { repository(owner: "${owner}", name: "${name}") {
+      pullRequest(number: ${pr.number}) {
+        reviewThreads(first: 100) {
+          nodes { isResolved isOutdated comments(first: 1) { nodes { path } } }
+        }
+      }
+    } }`,
+    "--jq", "[.data.repository.pullRequest.reviewThreads.nodes[] | {isResolved, isOutdated, path: (.comments.nodes[0].path // \"\")}]",
+  ]);
+  if (res.status !== 0 || !res.stdout.trim()) return null;
+  try {
+    const parsed = JSON.parse(res.stdout);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 // Inline review comments (the ones anchored to a line in the diff). These don't

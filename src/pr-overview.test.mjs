@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { overviewRows, wrapText, clampScroll } from "./pr-overview.mjs";
+import { overviewRows, wrapText, clampScroll, overviewViewport } from "./pr-overview.mjs";
 import { buildActivity, repoFromUrl } from "./pr.mjs";
 import { relativeTime } from "./pr-view.mjs";
 
@@ -61,46 +61,90 @@ test("the repo slug comes out of the PR url", () => {
 // ---- rows ----
 
 const LOADED = {
+  state: "OPEN",
+  author: { login: "author-person" },
+  baseRefName: "main",
+  mergeable: "MERGEABLE",
+  reviewDecision: "CHANGES_REQUESTED",
+  checkRuns: [],
+  reviewRequests: [],
+  reviews: [{ author: { login: "bo" }, state: "CHANGES_REQUESTED" }],
   body: "Some description.",
+  // Oldest first, the order buildActivity hands over.
   activity: [
-    { kind: "comment", login: "amy", body: "looks good", at: "2026-08-10T11:00:00Z" },
-    { kind: "review", login: "bo", state: "CHANGES_REQUESTED", body: "not yet", at: "2026-08-10T10:00:00Z" },
     { kind: "inline", login: "cy", body: "rename this", path: "src/a.js", line: 12, at: "2026-08-09T12:00:00Z" },
+    { kind: "review", login: "bo", state: "CHANGES_REQUESTED", body: "not yet", at: "2026-08-10T10:00:00Z" },
+    { kind: "comment", login: "amy", body: "looks good", at: "2026-08-10T11:00:00Z" },
   ],
 };
 
-test("the overview renders a description and the conversation under it", () => {
-  const lines = text(overviewRows(LOADED, 60, NOW));
-  expect(lines[0]).toContain("Description");
-  expect(lines.join("\n")).toContain("Some description.");
-  const convo = lines.findIndex((l) => l.includes("Conversation (3)"));
-  expect(convo).toBeGreaterThan(0);
-  expect(lines.join("\n")).toContain("looks good");
+// The status is the headline — it's the question the view exists to answer.
+test("the verdict and its reasons come first, before anything else", () => {
+  const lines = text(overviewRows(LOADED, 70, NOW));
+  expect(lines[0]).toContain("Blocked");
+  expect(lines[1]).toContain("Changes requested");
+  expect(lines[1]).toContain("by bo");
+  // Activity and description follow, in that order.
+  const activity = lines.findIndex((l) => l.includes("Recent activity"));
+  const desc = lines.findIndex((l) => l.includes("Description"));
+  expect(activity).toBeGreaterThan(0);
+  expect(desc).toBeGreaterThan(activity);
 });
 
-test("each kind of event is attributed in its own way", () => {
-  const lines = text(overviewRows(LOADED, 60, NOW)).join("\n");
-  expect(lines).toContain("amy commented");
-  expect(lines).toContain("bo requested changes");
-  expect(lines).toContain("cy commented on src/a.js:12");
+test("a review requested from you is called out as yours", () => {
+  const ov = { ...LOADED, reviewDecision: "REVIEW_REQUIRED", reviews: [], reviewRequests: [{ login: "me-person" }] };
+  const lines = text(overviewRows(ov, 70, NOW, "me-person"));
+  expect(lines[0]).toContain("Waiting on you");
+  expect(lines[1]).toContain("Your review is requested");
 });
 
-test("an inline reply says so", () => {
-  const ov = { body: "", activity: [{ kind: "inline", login: "cy", body: "ok", path: "a.js", line: 1, reply: true, at: "" }] };
-  expect(text(overviewRows(ov, 60, NOW)).join("\n")).toContain("cy replied on a.js:1");
+// Activity is a compact log now, not a transcript: one row per event, newest
+// first, so the latest word on the PR is the first thing under the status.
+test("activity is one line per event, newest first", () => {
+  const lines = text(overviewRows(LOADED, 70, NOW));
+  const at = lines.findIndex((l) => l.includes("Recent activity"));
+  expect(lines[at + 1]).toContain("amy commented");
+  expect(lines[at + 1]).toContain("looks good");
+  expect(lines[at + 2]).toContain("bo requested changes");
+  expect(lines[at + 3]).toContain("cy");
+  expect(lines[at + 3]).toContain("src/a.js:12");
 });
 
-test("relative ages are shown next to each event", () => {
-  const lines = text(overviewRows(LOADED, 60, NOW)).join("\n");
-  expect(lines).toContain("1h"); // amy, an hour ago
-  expect(lines).toContain("2h"); // bo
+test("an inline reply is marked as one", () => {
+  const ov = { ...LOADED, activity: [{ kind: "inline", login: "cy", body: "ok", path: "a.js", line: 1, reply: true, at: "" }] };
+  expect(text(overviewRows(ov, 70, NOW)).join("\n")).toContain("cy ↳ a.js:1");
 });
 
-test("an empty PR still renders both sections, saying they're empty", () => {
-  const lines = text(overviewRows({ body: "", activity: [] }, 60, NOW)).join("\n");
-  expect(lines).toContain("no description");
-  expect(lines).toContain("Conversation (0)");
-  expect(lines).toContain("nothing yet");
+test("a long comment is cut to its row rather than wrapping", () => {
+  const ov = { ...LOADED, activity: [{ kind: "comment", login: "amy", body: "x".repeat(400), at: "" }] };
+  for (const line of text(overviewRows(ov, 70, NOW))) expect(line.length).toBeLessThanOrEqual(70);
+});
+
+// The rendering complaint that prompted the redesign: raw HTML everywhere.
+test("HTML in a comment or description never reaches the screen", () => {
+  const ov = {
+    ...LOADED,
+    body: "<details><summary>Notes</summary><p>hidden</p></details>",
+    activity: [{ kind: "comment", login: "amy", body: "<p>see <a href='http://x'>this</a></p>", at: "" }],
+  };
+  const joined = text(overviewRows(ov, 70, NOW)).join("\n");
+  expect(joined).not.toContain("<");
+  expect(joined).toContain("▸ Notes (collapsed)");
+  expect(joined).toContain("see this");
+});
+
+test("a long activity list is capped with a count of the rest", () => {
+  const many = Array.from({ length: 20 }, (_, i) => ({ kind: "comment", login: `u${i}`, body: "x", at: "" }));
+  const joined = text(overviewRows({ ...LOADED, activity: many }, 70, NOW)).join("\n");
+  expect(joined).toContain("8 older");
+});
+
+test("an empty PR still renders, saying what's missing", () => {
+  const ov = { ...LOADED, reviewDecision: "APPROVED", reviews: [], body: "", activity: [] };
+  const joined = text(overviewRows(ov, 70, NOW)).join("\n");
+  expect(joined).toContain("Ready to merge");
+  expect(joined).toContain("no description");
+  expect(joined).not.toContain("Recent activity"); // nothing to show, no empty section
 });
 
 test("loading and failure states render instead of a blank pane", () => {
@@ -156,4 +200,33 @@ test("an unparseable timestamp reads as nothing rather than NaN", () => {
   expect(relativeTime("", NOW)).toBe("");
   expect(relativeTime("not a date", NOW)).toBe("");
   expect(relativeTime(null, NOW)).toBe("");
+});
+
+// ---- viewport ----
+
+// The "↓ N more" hint takes a row of its own. Forgetting that overflows the box
+// by one line, and Ink resolves the overflow by silently dropping the top of
+// the header — which is how the PR title vanished on a short terminal.
+test("a scrolling body gives up a row for the more-hint", () => {
+  // 20 rows of content, 10 rows of chrome-free space: needs the hint.
+  const scrolling = overviewViewport(20, 16, 4);
+  expect(scrolling.viewport).toBe(9);
+  expect(scrolling.viewport + 1).toBe(10); // body + hint fits the space exactly
+});
+
+test("content that fits keeps the whole space", () => {
+  expect(overviewViewport(5, 16, 4).viewport).toBe(10);
+  expect(overviewViewport(5, 16, 4).maxScroll).toBe(0);
+});
+
+test("the last row is always reachable", () => {
+  for (const [count, height] of [[20, 16], [100, 30], [7, 10], [1, 8]]) {
+    const { viewport, maxScroll } = overviewViewport(count, height, 4);
+    expect(maxScroll + viewport).toBeGreaterThanOrEqual(count);
+  }
+});
+
+test("a terminal too short for any body still yields a usable row", () => {
+  expect(overviewViewport(50, 4, 4).viewport).toBeGreaterThanOrEqual(1);
+  expect(overviewViewport(50, 1, 4).viewport).toBeGreaterThanOrEqual(1);
 });

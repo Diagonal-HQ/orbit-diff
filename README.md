@@ -457,32 +457,56 @@ copy (or run) before you leave.
 
 ### The PR overview (`G`)
 
-`G` swaps the file rail and diff for everything about the PR that *isn't* the
-diff, so a review can be finished without opening a browser:
+`G` swaps the file rail and diff for the answer to one question: **is this PR
+waiting on something, and is that something me?**
 
 ```
-┌ #42 Add caching to the resolver chain ─────────────┬ Reviewers ────┐
-│ by author-person   de-1234-resolver-cache → main   │ • someone-else│
-│ review changes requested  merge clean  +214 -37    │               │
-│                                                    │ Assignees     │
-│ ── Description ──────────────────────────────────  │ • you         │
-│ Adds a per-request cache to the resolver chain so  │               │
-│ repeated lookups don't re-hit the database.        │ Labels        │
-│                                                    │ • performance │
-│ ── Conversation (4) ─────────────────────────────  │               │
-│ cy commented on a.txt:2  2d                        │ Checks (1✓1✗) │
-│   Should this be `TWO_VALUE` for consistency?      │ ✗ test        │
-│ owenconti replied on a.txt:2  2d                   │ ● lint        │
-│   Good catch, will fix.                            │ ✓ build       │
-│ bo requested changes  18h                          │               │
-│   Blocking on the failing test.                    │               │
-└────────────────────────────────────────────────────┴───────────────┘
+┌ #42 Add caching to the resolver chain ──────────────┬ Reviewers ────┐
+│ by author-person   de-1234-resolver-cache → main    │ • you         │
+│ +214 -37  6 files                                   │ • someone-else│
+│                                                     │ Assignees     │
+│ ◆ Waiting on you                                    │ • you         │
+│   ✗ 1 check failing            test                 │ Labels        │
+│   ● 1 check still running      lint                 │ • performance │
+│   ◆ Your review is requested ←                      │               │
+│   ◷ Also waiting on            someone-else         │ Checks (1✓1✗) │
+│   ◷ 2 unresolved threads       resolver.js, cache.js│ ✗ test        │
+│                                                     │ ● lint        │
+│ ── Recent activity (2) ───────────────────────────  │ ✓ build       │
+│ amy commented  2d  Nice — does this handle nesting? │               │
+│ cy on resolver.js:2  2d  Should this be `TWO_VALUE`?│               │
+└─────────────────────────────────────────────────────┴───────────────┘
 ```
 
-The conversation interleaves all three kinds of activity — **inline review
-comments** (with the file and line they're anchored to), **issue comments**, and
-**review verdicts** — oldest first, so it reads top to bottom like the PR page
-does. Checks are sorted worst-first, so a red build never scrolls away.
+GitHub scatters that answer across fields that each ignore the others —
+`mergeStateStatus` is `BLOCKED` on nearly every open PR and never says why,
+`reviewDecision` ignores CI, the check rollup ignores reviews, and unresolved
+review threads live in a different API entirely. The top block gathers the lot
+into one verdict and a list of **specific, named** reasons:
+
+| Verdict | Meaning |
+| --- | --- |
+| `◆ Waiting on you` | your review is requested, or it's your PR and something needs fixing |
+| `✗ Blocked` | conflicts, or failing checks |
+| `◷ Waiting on others` | someone else's review, checks still running, unresolved threads |
+| `✓ Ready to merge` | nothing left in the way |
+
+Reasons carrying a `←` are the ones that need *you*. Anything that would be
+noise is left out: `BLOCKED` is only mentioned when nothing else explains the
+situation, and unresolved threads are never reported as "0" when the extra call
+to fetch them failed.
+
+Below that, recent activity is **one line per event** — newest first, so the
+latest word is nearest the verdict — and the description last. Comments,
+reviews and inline review comments all appear, each with the file and line where
+it applies.
+
+All prose goes through an HTML-to-text pass first. GitHub bodies are markdown
+*plus* arbitrary HTML, and a dependabot description is almost entirely
+`<details><blockquote><ul>` — which rendered as literal source before. `<details>`
+blocks collapse to `▸ Release notes (collapsed)`, matching how GitHub renders
+them; HTML comments (every PR template) disappear; links and `<code>` keep their
+text; entities decode.
 
 | Key | Action |
 | --- | --- |
@@ -493,8 +517,8 @@ does. Checks are sorted worst-first, so a red build never scrolls away.
 | `Esc` / `G` / `q` | back to the diff |
 
 It's fetched on first open and cached, so reopening is instant and refreshes
-behind what you're already looking at. Inline comments cost one extra API call
-(they're the one thing `gh pr view` won't return at any field).
+behind what you're already looking at. Two extra API calls back it: inline
+comments and review threads, neither of which `gh pr view` will return.
 
 ### Finishing a review (`g`)
 

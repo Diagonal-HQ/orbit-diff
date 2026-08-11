@@ -5,6 +5,8 @@
 // styled segments: { text, bold, italic, color, dimColor, strikethrough,
 // underline }, ready to splat onto an Ink <Text>.
 
+import { htmlToText } from "./html-text.mjs";
+
 // Split one line of prose into styled segments, handling inline code, bold,
 // italic, strikethrough, and links. Non-nesting and leftmost-match — enough for
 // real-world PR descriptions without a full parser.
@@ -33,8 +35,12 @@ function inline(text, base = {}) {
 }
 
 // Turn a markdown body into an array of segment-lists (one per rendered line).
+//
+// GitHub prose is markdown *plus* whatever raw HTML the author (or the bot) felt
+// like, so it goes through htmlToText first — otherwise a dependabot description
+// renders as forty lines of `<blockquote><li><a href=…>`.
 export function markdownLines(body) {
-  const raw = String(body || "").replace(/\r/g, "").replace(/\t/g, "  ").trim().split("\n");
+  const raw = htmlToText(body).replace(/\t/g, "  ").split("\n");
   const out = [];
   let inFence = false;
   for (const line of raw) {

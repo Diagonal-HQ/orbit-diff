@@ -17,9 +17,9 @@ import { navStep } from "./keys.mjs";
 import { sendLine, paneAlive } from "./mux.mjs";
 import { FALLBACK } from "./theme.mjs";
 import { openUrl } from "./platform.mjs";
-import { detectPR, submitAnnotations, approvePR, requestChanges } from "./github.mjs";
-import { PrOverview, overviewLayout } from "./PrOverview.jsx";
-import { overviewRows, clampScroll } from "./pr-overview.mjs";
+import { detectPR, submitAnnotations, approvePR, requestChanges, currentUser } from "./github.mjs";
+import { PrOverview, overviewLayout, HEAD_ROWS } from "./PrOverview.jsx";
+import { overviewRows, overviewViewport } from "./pr-overview.mjs";
 import { sessionForWorktree } from "./session.mjs";
 import { findingToAnnotation, reserveFindingIds } from "./ai/findings.mjs";
 import {
@@ -111,6 +111,9 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   const [ov, setOv] = useState(undefined);
   const [ovScroll, setOvScroll] = useState(0);
   const [ovRefreshing, setOvRefreshing] = useState(false);
+  // Our own GitHub login, so the overview can say "waiting on YOU" rather than
+  // making you scan the reviewer list. Best-effort and cached for the session.
+  const [me, setMe] = useState(null);
 
   // ---- AI reviewer + Q&A ----
   // Findings persist too, so the AI Review section (and each finding's promoted
@@ -144,6 +147,9 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
     let live = true;
     detectPR().then((found) => {
       if (live) setPr(found);
+    });
+    currentUser().then((login) => {
+      if (live) setMe(login);
     });
     return () => {
       live = false;
@@ -607,8 +613,8 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   // How far the overview can scroll, measured the same way it renders.
   const overviewScrollMax = () => {
     const { mainW } = overviewLayout(cols);
-    const rows = overviewRows(ov, Math.max(10, mainW - 4));
-    return Math.max(0, rows.length - Math.max(1, bodyH - 2 - 4));
+    const rows = overviewRows(ov, Math.max(10, mainW - 4), Date.now(), me);
+    return overviewViewport(rows.length, bodyH, HEAD_ROWS).maxScroll;
   };
   const scrollOverview = (delta) => {
     const max = overviewScrollMax();
@@ -1298,6 +1304,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
           width={cols}
           height={bodyH}
           refreshing={ovRefreshing}
+          me={me}
         />
         <StatusBar
           mode={mode}

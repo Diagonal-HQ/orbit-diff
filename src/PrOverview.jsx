@@ -1,11 +1,11 @@
 // The viewer's full-screen PR overview (`G`) — everything about the PR that
 // isn't the diff, so a review can be finished without opening a browser.
 //
-// Replaces the file rail + diff entirely (rather than squeezing into a pane)
-// because the conversation is the point: inline review comments, issue
-// comments, and review verdicts interleaved in one scrollable stream, which
-// needs the width. The right column carries the state you glance at — who's on
-// the hook, what CI thinks, labels.
+// It leads with what the PR is waiting on — failing checks, a review requested
+// from you, unresolved threads — because that's the question it exists to
+// answer. Recent activity is a compact log beneath it, and the description last.
+// The right column carries the state you glance at: who's on the hook, what CI
+// thinks, labels.
 //
 // Layout and content come from `pr-overview.mjs`; this file only slices the row
 // list to the viewport and paints it.
@@ -13,33 +13,32 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { checkState } from "./pr.mjs";
-import { CHECK_GLYPH, checkRank, truncate, reviewStateLabel, mergeStateLabel } from "./pr-view.mjs";
-import { overviewRows, clampScroll } from "./pr-overview.mjs";
+import { CHECK_GLYPH, checkRank, truncate } from "./pr-view.mjs";
+import { overviewRows, clampScroll, overviewViewport } from "./pr-overview.mjs";
 
 // Width of the right-hand state column, as a share of the screen, bounded so it
 // stays readable on a narrow terminal and doesn't sprawl on a wide one.
+// Rows the header takes above the scrolling body: title, by-line, size, spacer.
+export const HEAD_ROWS = 4;
+
 export function overviewLayout(cols) {
   const side = Math.max(22, Math.min(38, Math.round(cols * 0.28)));
   return { mainW: Math.max(20, cols - side), sideW: side };
 }
 
-export function PrOverview({ pr, overview, scroll = 0, width, height, refreshing = false }) {
+export function PrOverview({ pr, overview, scroll = 0, width, height, refreshing = false, me = null }) {
   const { mainW, sideW } = overviewLayout(width);
   // Border (2) + paddingX 1 each side (2).
   const innerW = Math.max(10, mainW - 4);
   const ov = overview;
 
-  // Rows above the scrolling body: title, branch line, the status line, spacer.
-  const headRows = 4;
-  const viewport = Math.max(1, height - 2 - headRows);
-  const rows = overviewRows(ov, innerW);
+  const rows = overviewRows(ov, innerW, Date.now(), me);
+  const { viewport } = overviewViewport(rows.length, height, HEAD_ROWS);
   const start = clampScroll(scroll, rows.length, viewport);
   const shown = rows.slice(start, start + viewport);
   const below = Math.max(0, rows.length - (start + shown.length));
 
   const loaded = ov && !ov.error;
-  const review = reviewStateLabel(loaded ? ov.reviewDecision : null);
-  const merge = mergeStateLabel(loaded ? ov : null);
 
   return (
     <Box width={width} height={height}>
@@ -57,21 +56,18 @@ export function PrOverview({ pr, overview, scroll = 0, width, height, refreshing
             {loaded ? `${ov.headRefName} → ${ov.baseRefName}` : ""}
           </Text>
         </Text>
+        {/* Size and lifecycle only. What the PR is *waiting on* is the block
+            below, and repeating "review required" here just competed with it. */}
         <Text wrap="truncate">
-          <Text dimColor>review </Text>
-          <Text color={review.color}>{review.text}</Text>
-          <Text dimColor>  merge </Text>
-          <Text color={merge.color}>{merge.text}</Text>
-          {loaded ? (
-            <>
-              <Text dimColor>{"  "}</Text>
-              <Text color="green">+{ov.additions}</Text>
-              <Text> </Text>
-              <Text color="red">-{ov.deletions}</Text>
-              {ov.isDraft ? <Text dimColor>  draft</Text> : null}
-              {ov.autoMergeRequest ? <Text color="magenta">  auto-merge</Text> : null}
-            </>
-          ) : null}
+          <Text color="green">+{loaded ? ov.additions : 0}</Text>
+          <Text> </Text>
+          <Text color="red">-{loaded ? ov.deletions : 0}</Text>
+          <Text dimColor>
+            {"  "}
+            {loaded ? `${ov.changedFiles} file${ov.changedFiles === 1 ? "" : "s"}` : ""}
+          </Text>
+          {loaded && ov.isDraft ? <Text dimColor>  draft</Text> : null}
+          {loaded && ov.mergeable === "CONFLICTING" ? <Text color="red">  conflicts</Text> : null}
         </Text>
         <Text>{" "}</Text>
 
