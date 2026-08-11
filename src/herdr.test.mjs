@@ -7,7 +7,7 @@ import { sessionKey } from "./session.mjs";
 // for the CLI. That covers the argument-building and parsing — the parts we can
 // be sure about — and deliberately not the parts that depend on a live server.
 //
-// A worktree's review is a herdr WORKSPACE of three tabs, so "window" ids in
+// A worktree's review is a herdr WORKSPACE of four tabs, so "window" ids in
 // this backend are workspace ids. See the header of herdr.mjs for why.
 
 const IN_HERDR = { HERDR_PANE_ID: "w1:p1" };
@@ -71,7 +71,7 @@ test("the envelope's request id is never mistaken for a resource id", () => {
   };
   const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/x" });
   expect(built.window).toBe("w9");
-  expect(built.panes.status).toBe("w9:p1");
+  expect(built.panes.diff).toBe("w9:p1");
 });
 
 // ---- reading the world ----
@@ -338,12 +338,11 @@ function buildingHerdr({ focusedAfter = null } = {}) {
   return { run, calls };
 }
 
-test("a review is a workspace of three tabs: review, claude, codex", () => {
+test("a review is a workspace of four single-pane tabs", () => {
   const { run, calls } = buildingHerdr();
   const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({
     worktreePath: "/wt/feature",
     name: "feature",
-    statusCmd: "orbit-diff pr-status",
     setupCmd: "make setup",
     diffCmd: "orbit-diff",
     claudeCmd: "claude",
@@ -352,32 +351,38 @@ test("a review is a workspace of three tabs: review, claude, codex", () => {
 
   expect(built.error).toBeUndefined();
   expect(built.window).toBe("w5"); // the workspace
-  expect(Object.keys(built.panes).sort()).toEqual(["claude", "codex", "diff", "setup", "status"]);
+  expect(Object.keys(built.panes).sort()).toEqual(["claude", "codex", "diff", "setup"]);
 
-  // Tab 1 is the workspace's original pane, split twice. Order matters: the
-  // DOWN split has to come first so the diff viewer spans the full width —
-  // split the top row first and it would only ever be half as wide.
-  const splits = calls.filter((c) => c[1] === "split");
-  expect(splits).toHaveLength(2);
-  expect(splits[0]).toContain("down"); // diff, full width along the bottom
-  expect(splits[1]).toContain("right"); // then overview | setup across the top
-  for (const s of splits) expect(s[2]).toBe("w5:p1"); // both split the overview pane
+  // Nothing is split any more: every tab is one full-size pane. A diff wants
+  // the width, an agent is a conversation, build output scrolls.
+  expect(calls.filter((c) => c[1] === "split")).toHaveLength(0);
 
-  // Tabs 2 and 3 are whole tabs in the same workspace, one agent each.
+  // The workspace's own first tab is the diff; the other three are created.
+  expect(built.panes.diff).toBe("w5:p1");
   const tabs = calls.filter((c) => is("tab", "create")(c));
-  expect(tabs).toHaveLength(2);
-  expect(tabs.map((t) => t[t.indexOf("--label") + 1])).toEqual(["claude", "codex"]);
+  expect(tabs.map((t) => t[t.indexOf("--label") + 1])).toEqual(["claude", "codex", "setup"]);
   for (const t of tabs) expect(t[t.indexOf("--workspace") + 1]).toBe("w5");
 
   // Every command lands in the right place.
   const ran = calls.filter((c) => c[1] === "run").map((c) => [c[2], c[3]]);
   expect(ran).toEqual([
-    [built.panes.status, "orbit-diff pr-status"],
-    [built.panes.setup, "make setup"],
     [built.panes.diff, "orbit-diff"],
     [built.panes.claude, "claude"],
     [built.panes.codex, "codex"],
+    [built.panes.setup, "make setup"],
   ]);
+});
+
+// The pr-status pane is gone: `G` covers it, with room to render it properly.
+test("no status pane is built, and a statusCmd is ignored rather than run", () => {
+  const { run, calls } = buildingHerdr();
+  const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({
+    worktreePath: "/wt/x",
+    statusCmd: "orbit-diff pr-status",
+  });
+  expect(built.panes.status).toBeUndefined();
+  expect(calls.some((c) => String(c).includes("pr-status"))).toBe(false);
+  expect(calls.some((c) => c.includes("orbit_role=status"))).toBe(false);
 });
 
 test("nothing in the build focuses anything", () => {
@@ -396,9 +401,9 @@ test("the workspace is tagged before any step that could fail", () => {
   createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/feature" });
 
   const tagIdx = calls.findIndex((c) => is("workspace", "report-metadata")(c));
-  const firstSplit = calls.findIndex((c) => c[1] === "split");
+  const firstTab = calls.findIndex((c) => is("tab", "create")(c));
   expect(tagIdx).toBeGreaterThan(-1);
-  expect(tagIdx).toBeLessThan(firstSplit);
+  expect(tagIdx).toBeLessThan(firstTab);
   expect(calls[tagIdx]).toContain("orbit_wt=/wt/feature");
   expect(calls[tagIdx]).toContain(`orbit_wtkey=${sessionKey("/wt/feature")}`);
   expect(calls[tagIdx].slice(3, 5)).toEqual(SOURCE);
@@ -411,7 +416,7 @@ test("a workspace abandoned mid-build is still findable, so it can be cleaned up
     if (is("workspace", "create")(args)) {
       return { status: 0, stdout: reply("workspace_create", { workspace_id: "w5", pane_id: "w5:p1" }), stderr: "" };
     }
-    if (args[1] === "split") return { status: 1, stdout: "", stderr: "boom" };
+    if (is("tab", "create")(args)) return { status: 1, stdout: "", stderr: "boom" };
     return { status: 0, stdout: "", stderr: "" };
   };
   const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/x" });

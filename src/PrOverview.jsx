@@ -26,7 +26,7 @@ export function overviewLayout(cols) {
   return { mainW: Math.max(20, cols - side), sideW: side };
 }
 
-export function PrOverview({ pr, overview, scroll = 0, width, height, refreshing = false, me = null }) {
+export function PrOverview({ pr, overview, scroll = 0, width, height, refreshing = false, me = null, env = null }) {
   const { mainW, sideW } = overviewLayout(width);
   // Border (2) + paddingX 1 each side (2).
   const innerW = Math.max(10, mainW - 4);
@@ -91,15 +91,53 @@ export function PrOverview({ pr, overview, scroll = 0, width, height, refreshing
         {below > 0 && <Text dimColor>↓ {below} more line{below === 1 ? "" : "s"}</Text>}
       </Box>
 
-      <StatePane ov={ov} width={sideW} height={height} />
+      <StatePane ov={ov} env={env} width={sideW} height={height} />
     </Box>
   );
 }
 
-// The right column: who's on the hook and what CI thinks. Checks get whatever
-// rows are left, worst-first, so a red build is never the thing that scrolled
-// off.
-function StatePane({ ov, width, height }) {
+// The provisioned environment for this worktree, at the very top of the column.
+//
+// It sits above everything else because it's the one thing here you *act* on —
+// `o` opens it — and because it was the only part of the old `orbit-diff
+// pr-status` pane not already covered by this view. `env` is the worktree's
+// session record, or null when there isn't one.
+function EnvRows({ env, room }) {
+  if (!env) return null;
+  const { envInstance, envUrl, status, error } = env;
+  let body;
+  if (envInstance != null || envUrl) {
+    body = (
+      <>
+        {envInstance != null && (
+          <Text wrap="truncate"><Text dimColor>• </Text><Text color="green">#{envInstance}</Text></Text>
+        )}
+        {envUrl && <Text wrap="truncate"><Text dimColor>• </Text>{truncate(envUrl, room - 2)}</Text>}
+      </>
+    );
+  } else if (status === "provisioning") {
+    body = <Text color="yellow" wrap="truncate">provisioning…</Text>;
+  } else if (status === "failed") {
+    body = <Text color="red" wrap="truncate">{truncate(error || "provisioning failed", room)}</Text>;
+  } else if (status === "tearing-down") {
+    body = <Text dimColor wrap="truncate">tearing down…</Text>;
+  } else {
+    return null; // a worktree with no environment says nothing rather than "none"
+  }
+
+  return (
+    <>
+      <Text bold color="cyan" wrap="truncate">Env <Text dimColor>(o)</Text></Text>
+      {body}
+      <Text>{" "}</Text>
+    </>
+  );
+}
+
+// The right column: the environment, who's on the hook, and what CI thinks.
+// Checks get whatever rows are left, worst-first, so a red build is never the
+// thing that scrolled off.
+function StatePane({ ov, env, width, height }) {
   const room = Math.max(6, width - 4);
   if (!ov || ov.error) {
     return (
@@ -117,7 +155,11 @@ function StatePane({ ov, width, height }) {
   const checks = [...(ov.checkRuns || [])].sort((a, b) => checkRank(checkState(a)) - checkRank(checkState(b)));
 
   const listRows = (n) => Math.max(1, n);
+  // Rows the env block will take, so the checks list below still gets counted
+  // space rather than overflowing the box.
+  const envRows = envRowCount(env);
   const used =
+    envRows +
     1 + listRows(reviewers.length) + 1 +
     1 + listRows(assignees.length) + 1 +
     (labels.length ? 1 + labels.length + 1 : 0) +
@@ -128,6 +170,7 @@ function StatePane({ ov, width, height }) {
 
   return (
     <Box flexDirection="column" width={width} height={height} borderStyle="round" borderColor="gray" paddingX={1}>
+      <EnvRows env={env} room={room} />
       <Text bold color="cyan" wrap="truncate">Reviewers</Text>
       {reviewers.length === 0 && <Text dimColor>none requested</Text>}
       {reviewers.map((r, i) => (
@@ -168,4 +211,16 @@ function StatePane({ ov, width, height }) {
       {overflow && <Text dimColor>… {checks.length - checksShown.length} more</Text>}
     </Box>
   );
+}
+
+// How many rows EnvRows renders, so StatePane can budget for it. Kept beside the
+// component so the two can't disagree about the height.
+function envRowCount(env) {
+  if (!env) return 0;
+  const { envInstance, envUrl, status } = env;
+  if (envInstance != null || envUrl) {
+    return 2 + (envInstance != null ? 1 : 0) + (envUrl ? 1 : 0); // header + rows + spacer
+  }
+  if (status === "provisioning" || status === "failed" || status === "tearing-down") return 3;
+  return 0;
 }

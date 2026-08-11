@@ -293,6 +293,9 @@ export async function runPrManager() {
     const built = buildReviewWindow({
       worktreePath: wtPath,
       name: windowName({ path: wtPath, branch: target.headRefName }),
+      // tmux only: it has no tabs, so its single window is the only place a
+      // status panel can live. The herdr backend drops it — the viewer's `G`
+      // overview covers the same ground with room to render it.
       statusCmd: "orbit-diff pr-status",
       setupCmd,
       claudeCmd,

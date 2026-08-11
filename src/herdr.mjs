@@ -528,14 +528,23 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     return built;
   };
 
-  // Build a worktree's review as its own herdr WORKSPACE of three tabs.
+  // Build a worktree's review as its own herdr WORKSPACE of four single-pane
+  // tabs:
   //
-  //   tab 1 "review"  ┌ overview ┬─── setup ───┐
-  //                   ├──────────┴─────────────┤
-  //                   │       orbit-diff       │   (full width)
-  //                   └────────────────────────┘
-  //   tab 2 "claude"  the Claude CLI, full tab
-  //   tab 3 "codex"   the Codex CLI, full tab
+  //   tab 1 "review"  orbit-diff, the whole tab
+  //   tab 2 "claude"  the Claude CLI
+  //   tab 3 "codex"   the Codex CLI
+  //   tab 4 "setup"   the provisioning script
+  //
+  // No splits at all. Each of these is something you sit in and use full-size —
+  // a diff wants the width, an agent is a conversation, and build output scrolls
+  // — so slicing the first tab into thirds only made all three worse.
+  //
+  // There used to be a fifth thing here, an `orbit-diff pr-status` pane showing
+  // branch/PR/checks/env. The viewer's `G` overview covers all of it and more,
+  // so it's gone rather than duplicated in a column too narrow to read. (The
+  // tmux backend still builds it; tmux has no tabs, so its one window is the
+  // only place that information can live.)
   //
   // Why a workspace rather than a tab: herdr stores metadata on panes and
   // workspaces but NOT on tabs, so a tab can only be found via its panes'
@@ -544,21 +553,8 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   // way tmux tagged a window. It also means closing a review takes any extra
   // tabs you opened for that worktree with it.
   //
-  // The agents get whole tabs rather than a pane each: they're the things you
-  // sit in and talk to, and a 30%-wide column is a poor place to do that. Tab 1
-  // keeps everything you only glance at: a top row of overview + setup, and the
-  // diff viewer full-width underneath, which is what a diff wants.
-  //
-  // Two constraints from herdr's split API shape this:
-  //   * splits go only `right` and `down`, never tmux's `-b`, so the tab's
-  //     original pane is always the top-left one and everything else is created
-  //     from it;
-  //   * splits size by ratio only — there's no `-l 8` for an absolute row count,
-  //     so the overview pane is a fraction of the left column rather than the
-  //     exactly-8-rows pr-status.mjs prints. On a short terminal it can clip.
-  //
   // Nothing here focuses anything (see restoreFocus above).
-  const buildReviewSpace = ({ worktreePath, name, statusCmd, setupCmd, diffCmd, claudeCmd, codexCmd }) => {
+  const buildReviewSpace = ({ worktreePath, name, setupCmd, diffCmd, claudeCmd, codexCmd }) => {
     const created = run([
       "workspace", "create", "--cwd", worktreePath, "--label", name || "review", "--no-focus",
     ]);
@@ -573,59 +569,25 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     // can always close it.
     tagWorkspace(window, worktreePath);
 
-    const overviewPane = idFrom(created.stdout, ["pane_id"]) || firstPaneOf(window, null);
-    if (!overviewPane) return { error: "couldn't parse the herdr pane id", window };
-    tag(overviewPane, "status", worktreePath);
-
-    // Tab 1, split 1: the diff viewer takes the bottom two thirds, full width.
-    // Splitting the untouched pane first is what makes it span the whole tab —
-    // do it after the top row exists and it would only ever be half as wide.
-    const below = run([
-      "pane", "split", overviewPane, "--direction", "down", "--ratio", "0.33",
-      "--cwd", worktreePath, "--no-focus",
-    ]);
-    if (below.status !== 0) return { error: (below.stderr || "herdr pane split failed").trim(), window };
-    const diffPane = idFrom(below.stdout, ["pane_id", "id"], { bare: true });
+    // The workspace's own first tab is the diff.
+    const diffPane = idFrom(created.stdout, ["pane_id"]) || firstPaneOf(window, null);
     if (!diffPane) return { error: "couldn't parse the herdr pane id", window };
     tag(diffPane, "diff", worktreePath);
 
-    // Tab 1, split 2: divide that top row — overview on the left, setup on the
-    // right. Setup gets the larger share: it's build output that wraps badly
-    // when narrow, where the overview is a handful of short status lines.
-    const right = run([
-      "pane", "split", overviewPane, "--direction", "right", "--ratio", "0.40",
-      "--cwd", worktreePath, "--no-focus",
-    ]);
-    if (right.status !== 0) return { error: (right.stderr || "herdr pane split failed").trim(), window };
-    const setupPane = idFrom(right.stdout, ["pane_id", "id"], { bare: true });
-    if (!setupPane) return { error: "couldn't parse the herdr pane id", window };
-    tag(setupPane, "setup", worktreePath);
+    const panes = { diff: diffPane };
+    for (const [role, label] of [["claude", "claude"], ["codex", "codex"], ["setup", "setup"]]) {
+      const tab = addTab(window, worktreePath, label);
+      if (tab.error) return { error: tab.error, window };
+      tag(tab.pane, role, worktreePath);
+      panes[role] = tab.pane;
+    }
 
-    // Tabs 2 and 3: one agent each, whole tab.
-    const claudeTab = addTab(window, worktreePath, "claude");
-    if (claudeTab.error) return { error: claudeTab.error, window };
-    tag(claudeTab.pane, "claude", worktreePath);
+    if (diffCmd) runInPane(panes.diff, diffCmd);
+    if (claudeCmd) runInPane(panes.claude, claudeCmd);
+    if (codexCmd) runInPane(panes.codex, codexCmd);
+    if (setupCmd) runInPane(panes.setup, setupCmd);
 
-    const codexTab = addTab(window, worktreePath, "codex");
-    if (codexTab.error) return { error: codexTab.error, window };
-    tag(codexTab.pane, "codex", worktreePath);
-
-    if (statusCmd) runInPane(overviewPane, statusCmd);
-    if (setupCmd) runInPane(setupPane, setupCmd);
-    if (diffCmd) runInPane(diffPane, diffCmd);
-    if (claudeCmd) runInPane(claudeTab.pane, claudeCmd);
-    if (codexCmd) runInPane(codexTab.pane, codexCmd);
-
-    return {
-      window,
-      panes: {
-        status: overviewPane,
-        setup: setupPane,
-        diff: diffPane,
-        claude: claudeTab.pane,
-        codex: codexTab.pane,
-      },
-    };
+    return { window, panes };
   };
 
   // What each review worktree's agent is doing, straight from herdr — no

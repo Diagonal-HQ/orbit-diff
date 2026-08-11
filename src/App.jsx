@@ -114,6 +114,10 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   // Our own GitHub login, so the overview can say "waiting on YOU" rather than
   // making you scan the reviewer list. Best-effort and cached for the session.
   const [me, setMe] = useState(null);
+  // This worktree's session record, for the overview's Env block. Re-read each
+  // time the overview opens or refreshes rather than cached at mount, because
+  // `orbit-diff env-report` usually lands well after the viewer is up.
+  const [env, setEnv] = useState(null);
 
   // ---- AI reviewer + Q&A ----
   // Findings persist too, so the AI Review section (and each finding's promoted
@@ -592,6 +596,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   const loadOverview = (silent = false) => {
     if (silent) setOvRefreshing(true);
     else setOv(null);
+    setEnv(readSession());
     prOverview(null, { withActivity: true })
       .then((res) => {
         setOv(res);
@@ -628,18 +633,22 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
     return setToast(res.ok ? `↗ opened PR #${pr.number} in browser` : `couldn't open browser: ${res.error}`);
   };
 
+  // This worktree's session record, or null when it isn't one we track.
+  const readSession = () => {
+    try {
+      return sessionForWorktree(repoRoot());
+    } catch {
+      return null;
+    }
+  };
+
   // `o` — the provisioned environment for this worktree, in a browser.
   //
   // Read from the session record at keypress time rather than cached at mount:
   // `orbit-diff env-report` typically lands *after* the viewer is already up, so
   // caching would mean `o` stayed dead for the whole session.
   const openEnvInBrowser = () => {
-    let sess = null;
-    try {
-      sess = sessionForWorktree(repoRoot());
-    } catch {
-      /* not a worktree we track */
-    }
+    const sess = readSession();
     const url = sess && sess.envUrl;
     if (!url) {
       return setToast(
@@ -1305,6 +1314,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
           height={bodyH}
           refreshing={ovRefreshing}
           me={me}
+          env={env}
         />
         <StatusBar
           mode={mode}
