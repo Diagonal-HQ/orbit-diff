@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useRef } from "react";
 import { scrollLock } from "./scroll-lock.mjs";
-import { stripEraseRun } from "./inplace-stdout.mjs";
+import { stripEraseRun, padFrameLines } from "./inplace-stdout.mjs";
 import { makeScreen, bandAt, extract, highlightFrame } from "./screen-grid.mjs";
 
 // Ties together the three moving parts of in-app mouse selection:
@@ -16,14 +16,20 @@ export function createMouseController(realStdout = process.stdout) {
   let repaint = null; // bump React so a frame is rewritten with the new highlight
 
   // One stdout wrap replacing inPlaceStdout: strip the erase run (repaint in
-  // place), snapshot the frame into the screen model, then splice in the
+  // place), pad every line back out to full width (stripping the erases means a
+  // short line no longer clears what the last frame left past its end — see
+  // padFrameLines), snapshot the frame into the screen model, then splice in the
   // selection highlight before the bytes go out.
+  //
+  // Padding comes before the snapshot so the screen model sees the same grid the
+  // terminal will, and mouse cells map to the right characters.
   const stdout = new Proxy(realStdout, {
     get(target, prop) {
       if (prop === "write") {
         return (chunk, ...rest) => {
           if (typeof chunk === "string") {
             chunk = stripEraseRun(chunk);
+            chunk = padFrameLines(chunk, target.columns);
             screen.capture(chunk, target.rows);
             if (selection) chunk = highlightFrame(chunk, selection.anchor, selection.head, selection.band);
           }

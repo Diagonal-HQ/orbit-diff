@@ -6,6 +6,7 @@ import { useMouseSelection } from "./mouse-select.mjs";
 import { prOverview, renderCommand, checkState } from "./pr.mjs";
 import { tildeify } from "./paths.mjs";
 import { markdownLines } from "./markdown.mjs";
+import { CHECK_GLYPH, checkRank, truncate, reviewStateLabel, mergeStateLabel } from "./pr-view.mjs";
 import { Spinner } from "./Spinner.jsx";
 
 // Load worktrees / sessions defensively — both are cheap local reads, but a
@@ -912,19 +913,13 @@ function MetaPane({ pr, overview, width, height }) {
 }
 
 function ReviewState({ decision }) {
-  const map = {
-    APPROVED: { text: "approved", color: "green" },
-    CHANGES_REQUESTED: { text: "changes requested", color: "red" },
-    REVIEW_REQUIRED: { text: "review required", color: "yellow" },
-  };
-  const s = map[decision] || { text: decision ? decision.toLowerCase() : "no reviews", color: "gray" };
+  const s = reviewStateLabel(decision);
   return <Text color={s.color}>{s.text}</Text>;
 }
 
 function MergeState({ pr }) {
-  if (pr.mergeable === "CONFLICTING") return <Text color="red">conflicts</Text>;
-  if (pr.mergeable === "MERGEABLE") return <Text color="green">clean</Text>;
-  return <Text dimColor>{(pr.mergeable || "unknown").toLowerCase()}</Text>;
+  const s = mergeStateLabel(pr);
+  return <Text color={s.color === "gray" ? undefined : s.color} dimColor={s.color === "gray"}>{s.text}</Text>;
 }
 
 // One entry in the header's Mine/All tab bar (switched with ←/→). The active
@@ -1003,12 +998,6 @@ const reviewGlyph = (decision) => {
   }
 };
 
-const CHECK_GLYPH = {
-  pass: { char: "✓", color: "green" },
-  fail: { char: "✗", color: "red" },
-  pending: { char: "●", color: "yellow" },
-};
-const checkRank = (s) => (s === "fail" ? 0 : s === "pending" ? 1 : 2);
 
 // Fuzzy-filter PRs by a subsequence match over "#number title branch".
 function filterPRs(prs, query) {
@@ -1030,8 +1019,3 @@ function clampIdx(i, len) {
   return Math.max(0, Math.min(i, len - 1));
 }
 
-function truncate(s, max) {
-  s = String(s ?? "");
-  if (s.length <= max) return s;
-  return s.slice(0, Math.max(1, max - 1)) + "…";
-}

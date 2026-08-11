@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Box, Text, useApp, useInput } from "ink";
 import { changeRequestPath, repoRoot, tildeify } from "./paths.mjs";
-import { renderEditor } from "./pr.mjs";
+import { renderEditor, prOverview } from "./pr.mjs";
 import { CONFIG_HINT } from "./ai/config.mjs";
 import { Sidebar } from "./Sidebar.jsx";
 import { DiffPanel } from "./DiffPanel.jsx";
@@ -18,6 +18,9 @@ import { sendLine, paneAlive } from "./mux.mjs";
 import { FALLBACK } from "./theme.mjs";
 import { openUrl } from "./platform.mjs";
 import { detectPR, submitAnnotations, approvePR, requestChanges } from "./github.mjs";
+import { PrOverview, overviewLayout } from "./PrOverview.jsx";
+import { overviewRows, clampScroll } from "./pr-overview.mjs";
+import { sessionForWorktree } from "./session.mjs";
 import { findingToAnnotation, reserveFindingIds } from "./ai/findings.mjs";
 import {
   makeAnnotation,
@@ -39,6 +42,7 @@ import { fileDigest } from "./ai/cache.mjs";
 // Modes: "normal" | "files" (filter sidebar) | "lines" (find in changed lines)
 //        "comment" (type an annotation) | "submit" (choose where annotations go)
 //        "verdict" (approve / request changes on the PR)
+//        "overview" (full-screen PR overview: description, conversation, state)
 //        "reviewConfirm" (confirm kicking off an AI review) | "ask" (ask the model)
 // AI review findings are no longer a separate panel — they stream into the rail's
 // "AI Review" section (below Annotations) and navigate like everything else.
@@ -97,6 +101,16 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   // ---- Review verdicts (`g`) ----
   const [verdictSel, setVerdictSel] = useState(0); // highlighted verdict row
   const [verdictBusy, setVerdictBusy] = useState(false); // a verdict is in flight
+  // Where to land when the menu closes. `g` is reachable from the diff and from
+  // the overview, and cancelling should put you back where you were rather than
+  // always dumping you in the diff.
+  const [verdictFrom, setVerdictFrom] = useState("normal");
+
+  // ---- PR overview (`G`) ----
+  // undefined = never opened · null = loading · object = loaded (or {error}).
+  const [ov, setOv] = useState(undefined);
+  const [ovScroll, setOvScroll] = useState(0);
+  const [ovRefreshing, setOvRefreshing] = useState(false);
 
   // ---- AI reviewer + Q&A ----
   // Findings persist too, so the AI Review section (and each finding's promoted
@@ -564,6 +578,74 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       .finally(() => setPosting(false));
   };
 
+  // ---- PR overview (`G`) ----
+
+  // Fetch (or re-fetch) the overview. `withActivity` pulls the conversation too,
+  // which is a second round trip — worth it here, where the conversation IS the
+  // feature. Kept in state so reopening `G` is instant and `R` refreshes.
+  const loadOverview = (silent = false) => {
+    if (silent) setOvRefreshing(true);
+    else setOv(null);
+    prOverview(null, { withActivity: true })
+      .then((res) => {
+        setOv(res);
+        if (!silent) setOvScroll(0);
+      })
+      .catch((e) => setOv({ error: e.message }))
+      .finally(() => setOvRefreshing(false));
+  };
+
+  // `G`. Opens on whatever we already have and refreshes behind it, so it paints
+  // immediately on reopen instead of flashing "loading…" every time.
+  const openOverview = () => {
+    if (!pr) return setToast("no open PR for this branch");
+    setMode("overview");
+    if (ov === undefined) loadOverview(false);
+    else loadOverview(true);
+  };
+
+  // How far the overview can scroll, measured the same way it renders.
+  const overviewScrollMax = () => {
+    const { mainW } = overviewLayout(cols);
+    const rows = overviewRows(ov, Math.max(10, mainW - 4));
+    return Math.max(0, rows.length - Math.max(1, bodyH - 2 - 4));
+  };
+  const scrollOverview = (delta) => {
+    const max = overviewScrollMax();
+    setOvScroll((v) => Math.max(0, Math.min(v + delta, max)));
+  };
+
+  // `p` — the PR in a browser.
+  const openPrInBrowser = () => {
+    if (!pr) return setToast("no PR found for this branch");
+    const res = openUrl(pr.url);
+    return setToast(res.ok ? `↗ opened PR #${pr.number} in browser` : `couldn't open browser: ${res.error}`);
+  };
+
+  // `o` — the provisioned environment for this worktree, in a browser.
+  //
+  // Read from the session record at keypress time rather than cached at mount:
+  // `orbit-diff env-report` typically lands *after* the viewer is already up, so
+  // caching would mean `o` stayed dead for the whole session.
+  const openEnvInBrowser = () => {
+    let sess = null;
+    try {
+      sess = sessionForWorktree(repoRoot());
+    } catch {
+      /* not a worktree we track */
+    }
+    const url = sess && sess.envUrl;
+    if (!url) {
+      return setToast(
+        sess && sess.status === "provisioning"
+          ? "environment still provisioning — no URL yet"
+          : "no environment URL for this worktree (setup reports it with `orbit-diff env-report <instance> --url <url>`)",
+      );
+    }
+    const res = openUrl(url);
+    return setToast(res.ok ? `↗ opened ${tildeify(url)}` : `couldn't open browser: ${res.error}`);
+  };
+
   // ---- Review verdicts (`g`) ----
 
   // The three ways to finish a review. Labels spell out every side effect,
@@ -598,15 +680,24 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
     if (!pr) return setToast("no open PR for this branch");
     if (verdictBusy) return setToast("still submitting a review…");
     if (posting) return setToast("still posting to the PR…");
+    setVerdictFrom(mode === "overview" ? "overview" : "normal");
     setVerdictSel(0);
     setMode("verdict");
+  };
+
+  // Land back where `g` was pressed. Coming from the overview we also re-fetch
+  // it: a verdict just changed the review state, assignees, and possibly
+  // auto-merge, so the thing you're looking at is stale the moment it lands.
+  const closeVerdict = ({ refresh = false } = {}) => {
+    setMode(verdictFrom);
+    if (refresh && verdictFrom === "overview") loadOverview(true);
   };
 
   // Approve, optionally enabling auto-merge. Async like the submit path: back to
   // normal mode with a progress toast, then a report of what actually happened.
   const runApprove = (merge) => {
     if (!pr) return;
-    setMode("normal");
+    closeVerdict();
     setVerdictBusy(true);
     setToast(merge ? `approving PR #${pr.number} + auto-merge…` : `approving PR #${pr.number}…`);
     approvePR(pr, { merge, mergeMethod: configRef.current?.pr?.mergeMethod || "" })
@@ -618,14 +709,17 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
         setToast([...parts, ...res.warnings].join(" · "));
       })
       .catch((e) => setToast(`approve failed: ${e.message}`))
-      .finally(() => setVerdictBusy(false));
+      .finally(() => {
+        setVerdictBusy(false);
+        if (verdictFrom === "overview") loadOverview(true);
+      });
   };
 
   // Request changes: annotations become inline comments on one review, then the
   // PR goes back to its author.
   const runRequestChanges = () => {
     if (!pr) return;
-    setMode("normal");
+    closeVerdict();
     setVerdictBusy(true);
     setToast(`requesting changes on PR #${pr.number}…`);
     requestChanges(pr, annotations, files)
@@ -638,13 +732,16 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
         setToast([...parts, ...res.warnings].join(" · "));
       })
       .catch((e) => setToast(`request changes failed: ${e.message}`))
-      .finally(() => setVerdictBusy(false));
+      .finally(() => {
+        setVerdictBusy(false);
+        if (verdictFrom === "overview") loadOverview(true);
+      });
   };
 
   // Run whatever the verdict menu's highlighted row is.
   const chooseVerdict = () => {
     const opt = verdictOptions[clamp(verdictSel, 0, verdictOptions.length - 1)];
-    setMode("normal");
+    closeVerdict();
     if (!opt) return;
     if (opt.key === "approve") return runApprove(false);
     if (opt.key === "approveMerge") return runApprove(true);
@@ -899,8 +996,23 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
 
   useInput((input, key) => {
     // ---- Submit target picker ----
+    if (mode === "overview") {
+      if (key.escape || input === "q" || input === "G") return setMode("normal");
+      if (input === "R") return loadOverview(true);
+      if (input === "p") return openPrInBrowser();
+      if (input === "o") return openEnvInBrowser();
+      if (input === "g") return openVerdict(); // finish the review without leaving
+      if (input === "t") return setOvScroll(0);
+      if (input === "b") return setOvScroll(overviewScrollMax());
+      if (key.pageUp || (key.ctrl && input === "u")) return scrollOverview(-Math.max(1, bodyH - 6));
+      if (key.pageDown || (key.ctrl && input === "d")) return scrollOverview(Math.max(1, bodyH - 6));
+      const step = navStep(input, key);
+      if (step) return scrollOverview(step);
+      return;
+    }
+
     if (mode === "verdict") {
-      if (key.escape) return setMode("normal");
+      if (key.escape) return closeVerdict();
       if (key.return) return chooseVerdict();
       // navStep, not `input === "j"`: two fast presses arrive as one "jj" chunk,
       // and dropping them here would leave the highlight on a row you'd already
@@ -1060,8 +1172,11 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
     // Promote the highlighted finding to a real annotation (only in the AI Review
     // section — `p` is otherwise unbound).
     if (input === "p") {
+      // Promote still wins where it means something — the AI review section is
+      // the only place a finding is selected — and `p` opens the PR everywhere
+      // else, which is what the status bar already advertises per-section.
       if (focus === "sidebar" && activeSection === "review") return promoteFinding();
-      return;
+      return openPrInBrowser();
     }
     if (input === "a") {
       // Jump the rail's cursor to the first annotation (no separate overlay).
@@ -1073,11 +1188,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       return;
     }
     if (input === "y") return copyRequests();
-    if (input === "o") {
-      if (!pr) return setToast("no PR found for this branch");
-      const res = openUrl(pr.url);
-      return setToast(res.ok ? `↗ opened PR #${pr.number} in browser` : `couldn't open browser: ${res.error}`);
-    }
+    if (input === "o") return openEnvInBrowser();
     if (input === "e") return openInEditor();
     // Toggle side-by-side vs inline diff (plain `d`; ctrl-d pages the diff below).
     if (input === "d" && !key.ctrl) {
@@ -1114,8 +1225,11 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
     // moved to `t`. (Ink reports no Home/End key, so there's no neutral key to
     // put it on — see the Key interface in ink's use-input.)
     if (input === "g") return openVerdict();
+    if (input === "G") return openOverview();
+    // `g` and `G` both went to the review actions, so the cursor jumps live on
+    // t/b now. (Ink reports no Home/End key — see its Key interface.)
     if (input === "t") return moveCursor(0);
-    if (input === "G") return moveCursor(total - 1);
+    if (input === "b") return moveCursor(total - 1);
 
     // Line-granular ↑↓/jk are pane-sensitive: move files vs. move the cursor.
     // In the rail they walk files → annotations → AI review as one continuous
@@ -1171,6 +1285,44 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       if (key.downArrow || input === "j") return moveCursor(cursor + 1);
     }
   });
+
+  // The overview replaces the whole body — rail and diff both — rather than
+  // taking a pane. The conversation is the point of it, and that needs width.
+  if (mode === "overview") {
+    return (
+      <Box flexDirection="column" width={cols} height={rows - 1}>
+        <PrOverview
+          pr={pr}
+          overview={ov}
+          scroll={ovScroll}
+          width={cols}
+          height={bodyH}
+          refreshing={ovRefreshing}
+        />
+        <StatusBar
+          mode={mode}
+          source={source}
+          fileQuery={fileQuery}
+          lineQuery={lineQuery}
+          scope={scope}
+          matches={matches}
+          matchIdx={matchIdx}
+          focus={focus}
+          section={activeSection}
+          line={cursor + 1}
+          lineTotal={total}
+          annCount={annotations.length}
+          hasPr={!!pr}
+          reviewCount={findings.length}
+          fileCount={files.length}
+          commentTarget={commentTarget}
+          selectionRange={selectionRange}
+          askShowHistory={askShowHistory}
+          toast={toast}
+        />
+      </Box>
+    );
+  }
 
   return (
     <Box flexDirection="column" width={cols} height={rows - 1}>
@@ -1303,6 +1455,18 @@ function StatusBar({
   if (mode === "submit") {
     return <Bar><Text color="cyan">submit</Text><Dim> · choose a target in the panel · ↑↓ move · enter choose · esc cancel</Dim></Bar>;
   }
+  if (mode === "overview") {
+    return (
+      <Bar>
+        <Text color="cyan">PR overview</Text>
+        <Dim> · ↑↓/jk scroll · ^u/^d page · t/b ends · </Dim>
+        <Text color="magenta">g</Text><Dim> review · </Dim>
+        <Text color="green">p</Text><Dim> PR · </Dim>
+        <Text color="green">o</Text><Dim> env · </Dim>
+        <Text color="green">R</Text><Dim> refresh · esc back</Dim>
+      </Bar>
+    );
+  }
   if (mode === "verdict") {
     return <Bar><Text color="magenta">review verdict</Text><Dim> · choose in the panel · ↑↓ move · enter submit · esc cancel</Dim></Bar>;
   }
@@ -1343,8 +1507,13 @@ function StatusBar({
         <><Text color="green">c</Text><Dim> note · </Dim><Text color="green">v</Text><Dim> sel · </Dim></>
       )}
       <Text color="green">a</Text><Dim> notes · </Dim>
-      {hasPr ? <><Text color="magenta">g</Text><Dim> review · </Dim></> : null}
-      <Text color="green">o</Text><Dim> open PR · </Dim>
+      {hasPr ? (
+        <>
+          <Text color="magenta">g</Text><Dim> review · </Dim>
+          <Text color="cyan">G</Text><Dim> overview · </Dim>
+        </>
+      ) : null}
+      <Text color="green">o</Text><Dim> env · </Dim>
       <Text color="blueBright">A</Text><Dim> ai · </Dim>
       <Text color="blueBright">?</Text><Dim> ask · </Dim>
       <Text color="cyan">/</Text><Dim> files · </Dim>

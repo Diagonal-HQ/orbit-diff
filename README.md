@@ -90,7 +90,7 @@ orbit-diff main..feature    # a branch range, PR-style
 | `[` / `]` | narrow / widen the file rail (responsive default until adjusted) |
 | `↑↓` / `j` `k` | move file (rail) · move the line cursor (diff) |
 | `PgUp/PgDn` / `Ctrl-u` `Ctrl-d` | move the cursor a page — **works from either pane** |
-| `t` / `G` | jump the cursor to top / bottom — **works from either pane** |
+| `t` / `b` | jump the cursor to top / bottom — **works from either pane** |
 | `/` | filter files (fuzzy subsequence on path) |
 | `f` | find in diff contents — matches every line, context included |
 | `Tab` (while finding) | toggle search scope: **whole diff** ⇄ **focused file** |
@@ -99,10 +99,12 @@ orbit-diff main..feature    # a branch range, PR-style
 | `c` | comment on the selection (or the cursor line); on an already-annotated line, edit it |
 | `x` | delete the annotation on the cursor line (or the highlighted one in the rail's annotations list) |
 | `a` | jump the rail cursor to the annotations list (then `↑↓`/`j` `k` navigate, `Enter` jumps to it in the diff) |
-| `o` | open this branch's GitHub PR in the browser (when one exists) |
+| `o` | open this worktree's **provisioned environment** in the browser (the URL `orbit-diff env-report --url` recorded) |
+| `p` | open this branch's GitHub PR in the browser (in the AI Review section, `p` still promotes the highlighted finding) |
 | `y` | copy all annotations to the clipboard as a change-request prompt for Claude Code |
 | `r` | open the **submit** picker: apply via Claude Code (or *send to the Claude pane* in a managed review window), post to the GitHub PR (when one exists), or copy |
 | `g` | **finish the review** — approve, approve + merge when ready, or request changes (see below; only when this branch has an open PR) |
+| `G` | **PR overview** — description, conversation, checks and reviewers, full-screen (see below) |
 | `R` | reload the diff — pick up edits Claude made in its pane |
 | `A` | **AI review** of the diff — findings stream into a side panel (`↑↓`/`j` `k` move · `Enter` jump to it · `p` promote to an annotation · `Esc` close) |
 | `?` | **ask** the model a question about the diff / codebase — the answer streams into a panel (`Ctrl-u`/`Ctrl-d` scroll the transcript · `Tab` past conversations · `Esc` close) |
@@ -452,6 +454,47 @@ them as inline comments on the branch's GitHub PR, or copy them out.
 
 Annotations are **in-memory for the session** — they're gone when you quit, so
 copy (or run) before you leave.
+
+### The PR overview (`G`)
+
+`G` swaps the file rail and diff for everything about the PR that *isn't* the
+diff, so a review can be finished without opening a browser:
+
+```
+┌ #42 Add caching to the resolver chain ─────────────┬ Reviewers ────┐
+│ by author-person   de-1234-resolver-cache → main   │ • someone-else│
+│ review changes requested  merge clean  +214 -37    │               │
+│                                                    │ Assignees     │
+│ ── Description ──────────────────────────────────  │ • you         │
+│ Adds a per-request cache to the resolver chain so  │               │
+│ repeated lookups don't re-hit the database.        │ Labels        │
+│                                                    │ • performance │
+│ ── Conversation (4) ─────────────────────────────  │               │
+│ cy commented on a.txt:2  2d                        │ Checks (1✓1✗) │
+│   Should this be `TWO_VALUE` for consistency?      │ ✗ test        │
+│ owenconti replied on a.txt:2  2d                   │ ● lint        │
+│   Good catch, will fix.                            │ ✓ build       │
+│ bo requested changes  18h                          │               │
+│   Blocking on the failing test.                    │               │
+└────────────────────────────────────────────────────┴───────────────┘
+```
+
+The conversation interleaves all three kinds of activity — **inline review
+comments** (with the file and line they're anchored to), **issue comments**, and
+**review verdicts** — oldest first, so it reads top to bottom like the PR page
+does. Checks are sorted worst-first, so a red build never scrolls away.
+
+| Key | Action |
+| --- | --- |
+| `↑↓` / `j` `k` · `^u` / `^d` · `t` / `b` | scroll · page · jump to ends |
+| `g` | the review-verdict menu, without leaving the overview — it returns here afterwards and refreshes |
+| `p` / `o` | open the PR / the provisioned environment in a browser |
+| `R` | refetch |
+| `Esc` / `G` / `q` | back to the diff |
+
+It's fetched on first open and cached, so reopening is instant and refreshes
+behind what you're already looking at. Inline comments cost one extra API call
+(they're the one thing `gh pr view` won't return at any field).
 
 ### Finishing a review (`g`)
 

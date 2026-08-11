@@ -215,23 +215,114 @@ const VIEW_FIELDS = [
   "reviewDecision", "mergeable", "mergeStateStatus", "additions", "deletions",
   "changedFiles", "url", "body", "labels", "updatedAt", "createdAt",
   "statusCheckRollup", "assignees", "reviewRequests",
+  "comments", "reviews", "autoMergeRequest",
 ].join(",");
 
 // Fetch the detailed overview for one PR, or (with no argument) the PR for
 // the current branch. Resolves an object (with a derived `checks` summary) or
 // { error } so the caller can show a reason instead of nothing.
-export async function prOverview(number = null) {
+//
+// `withActivity` additionally pulls the conversation — issue comments, review
+// submissions, and inline review comments — and merges them into one
+// time-ordered `activity` list. The viewer's overview (`G`) asks for it; the PR
+// manager's smaller pane doesn't, and shouldn't pay for the extra round trips.
+export async function prOverview(number = null, { withActivity = false } = {}) {
   const res = await gh(["pr", "view", ...(number != null ? [String(number)] : []), "--json", VIEW_FIELDS]);
   if (res.status !== 0 || !res.stdout.trim()) {
     return { error: res.stderr.trim().split("\n").slice(-1)[0] || `gh exited ${res.status}` };
   }
+  let pr;
   try {
-    const pr = JSON.parse(res.stdout);
-    const checkRuns = latestChecks(pr.statusCheckRollup);
-    return { ...pr, checkRuns, checks: summarizeChecks(checkRuns) };
+    pr = JSON.parse(res.stdout);
   } catch (err) {
     return { error: `couldn't parse gh output: ${err.message}` };
   }
+  const checkRuns = latestChecks(pr.statusCheckRollup);
+  const out = { ...pr, checkRuns, checks: summarizeChecks(checkRuns) };
+  if (withActivity) out.activity = buildActivity(pr, await inlineComments(pr));
+  return out;
+}
+
+// Inline review comments (the ones anchored to a line in the diff). These don't
+// come back from `gh pr view` at any field — only the REST endpoint has them —
+// so this is a second call, and a failure just means the conversation renders
+// without them rather than the whole overview failing.
+async function inlineComments(pr) {
+  const repo = repoFromUrl(pr.url);
+  if (!repo || !pr.number) return [];
+  const res = await gh([
+    "api", `repos/${repo}/pulls/${pr.number}/comments`, "--paginate",
+    "--jq", "[.[] | {login: .user.login, body, path, line, side, createdAt: .created_at, replyTo: .in_reply_to_id}]",
+  ]);
+  if (res.status !== 0 || !res.stdout.trim()) return [];
+  try {
+    // --paginate concatenates one array per page; parse each and flatten.
+    return res.stdout.trim().split("\n").filter(Boolean).flatMap((line) => JSON.parse(line));
+  } catch {
+    return [];
+  }
+}
+
+// "owner/name" out of a PR's html url. Cheaper and more reliable here than a
+// second `gh repo view` — the overview already has the url in hand.
+export function repoFromUrl(url) {
+  const m = String(url || "").match(/github\.com\/([^/]+\/[^/]+)\/pull\//);
+  return m ? m[1] : null;
+}
+
+// Merge the three kinds of conversation into one time-ordered stream:
+//
+//   comment  someone wrote on the PR
+//   review   someone submitted a review (approved / requested changes / commented)
+//   inline   someone commented on a specific line
+//
+// A review submission with no body and no state worth showing is dropped: those
+// are the empty envelopes GitHub creates around inline comments, and rendering
+// them as "reviewed" events would bury the actual conversation.
+export function buildActivity(pr, inline = []) {
+  const events = [];
+
+  for (const c of pr.comments || []) {
+    if (!c) continue;
+    events.push({
+      kind: "comment",
+      login: c.author?.login || "?",
+      body: c.body || "",
+      at: c.createdAt || "",
+    });
+  }
+
+  for (const r of pr.reviews || []) {
+    if (!r) continue;
+    const state = r.state || "";
+    const body = (r.body || "").trim();
+    if (!body && state === "COMMENTED") continue; // the empty envelope described above
+    events.push({
+      kind: "review",
+      login: r.author?.login || "?",
+      body,
+      state,
+      at: r.submittedAt || "",
+    });
+  }
+
+  for (const c of inline) {
+    if (!c) continue;
+    events.push({
+      kind: "inline",
+      login: c.login || "?",
+      body: c.body || "",
+      path: c.path || "",
+      line: c.line ?? null,
+      reply: c.replyTo != null,
+      at: c.createdAt || "",
+    });
+  }
+
+  // Oldest first — a conversation reads top to bottom. Undated events sort last
+  // rather than jumping to the front on an empty string.
+  events.sort((a, b) => (a.at || "\uffff").localeCompare(b.at || "\uffff"));
+  return events;
 }
 
 // Single-quote a value for safe interpolation into a POSIX shell command.
