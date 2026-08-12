@@ -160,11 +160,15 @@ const mouse = createMouseController(process.stdout);
 const { stdin: lockedStdin, enable: enableScrollLock, disable: disableScrollLock } = mouse;
 
 let current = files;
+// The viewer opens on the PR overview, but only the *first* time round this loop.
+// Coming back from an editor or a Claude handoff you were working in the diff, so
+// that's where you should land rather than back at the front door.
+let startMode = "overview";
 while (true) {
   const handoff = { doc: null };
   enableScrollLock();
   const app = render(
-    <App files={current} reloadDiff={() => parseDiff(loadDiff(args))} source={source} handoff={handoff} claudePane={claudePane} activeBg={activeBg} selectBg={selectBg} addBg={addBg} delBg={delBg} mouse={mouse} />,
+    <App files={current} reloadDiff={() => parseDiff(loadDiff(args))} source={source} handoff={handoff} claudePane={claudePane} initialMode={startMode} activeBg={activeBg} selectBg={selectBg} addBg={addBg} delBg={delBg} mouse={mouse} />,
     { exitOnCtrlC: true, stdout: mouse.stdout, stdin: lockedStdin },
   );
   await app.waitUntilExit();
@@ -196,6 +200,7 @@ while (true) {
       break;
     }
     current = next;
+    startMode = "normal";
     continue; // back into the viewer
   }
 
@@ -226,4 +231,5 @@ while (true) {
     break;
   }
   current = next; // loop back into the viewer on the fresh diff
+  startMode = "normal";
 }

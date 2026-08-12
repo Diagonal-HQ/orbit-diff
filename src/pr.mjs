@@ -224,7 +224,7 @@ const VIEW_FIELDS = [
 //
 // `withActivity` additionally pulls the conversation — issue comments, review
 // submissions, and inline review comments — and merges them into one
-// time-ordered `activity` list. The viewer's overview (`G`) asks for it; the PR
+// time-ordered `activity` list. The viewer's overview (`O`) asks for it; the PR
 // manager's smaller pane doesn't, and shouldn't pay for the extra round trips.
 export async function prOverview(number = null, { withActivity = false } = {}) {
   const res = await gh(["pr", "view", ...(number != null ? [String(number)] : []), "--json", VIEW_FIELDS]);

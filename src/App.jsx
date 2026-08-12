@@ -44,16 +44,24 @@ import { fileDigest } from "./ai/cache.mjs";
 //        "verdict" (approve / request changes on the PR)
 //        "overview" (full-screen PR overview: description, conversation, state)
 //        "reviewConfirm" (confirm kicking off an AI review) | "ask" (ask the model)
+// "overview" is where the viewer opens (see initialMode); "normal" is the diff,
+// and `O` moves between the two in either direction.
 // AI review findings are no longer a separate panel — they stream into the rail's
 // "AI Review" section (below Annotations) and navigate like everything else.
-export function App({ files: initialFiles, reloadDiff, source, handoff, claudePane = null, activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg, addBg = FALLBACK.addBg, delBg = FALLBACK.delBg, mouse = null }) {
+export function App({ files: initialFiles, reloadDiff, source, handoff, claudePane = null, initialMode = "overview", activeBg = FALLBACK.activeBg, selectBg = FALLBACK.selectBg, addBg = FALLBACK.addBg, delBg = FALLBACK.delBg, mouse = null }) {
   const { exit } = useApp();
   const { cols, rows } = useDimensions();
 
   // The parsed diff, seeded from the prop. Held in state so the chat can edit the
   // working tree and we can reload it in place (see reloadAfterEdit).
   const [files, setFiles] = useState(initialFiles);
-  const [mode, setMode] = useState("normal");
+  // We open on the PR overview, not the diff: the first question on picking up a
+  // review is "what is this and what's it waiting on", not "what changed on line
+  // 1". `O` toggles between the two from either side. Callers coming back from a
+  // handoff pass initialMode: "normal" so returning lands you back in the diff,
+  // and a branch with no PR falls through to the diff on its own (see the boot
+  // effect below).
+  const [mode, setMode] = useState(initialMode);
   const [focus, setFocus] = useState("sidebar");
   const [fileQuery, setFileQuery] = useState("");
   const [lineQuery, setLineQuery] = useState("");
@@ -106,7 +114,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   // always dumping you in the diff.
   const [verdictFrom, setVerdictFrom] = useState("normal");
 
-  // ---- PR overview (`G`) ----
+  // ---- PR overview (`O`) ----
   // undefined = never opened · null = loading · object = loaded (or {error}).
   const [ov, setOv] = useState(undefined);
   const [ovScroll, setOvScroll] = useState(0);
@@ -143,22 +151,6 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   const reviewToken = useRef(0); // guards stale async review callbacks
   const askToken = useRef(0); // guards stale async ask callbacks
   const askConvo = useRef(null); // live multi-turn Q&A session, or null
-
-  // Look up the branch's PR once on mount so the picker can offer "post to PR"
-  // only when one actually exists. Best-effort and off the critical path — a
-  // missing `gh`, no PR, or a non-GitHub remote just leaves the option hidden.
-  useEffect(() => {
-    let live = true;
-    detectPR().then((found) => {
-      if (live) setPr(found);
-    });
-    currentUser().then((login) => {
-      if (live) setMe(login);
-    });
-    return () => {
-      live = false;
-    };
-  }, []);
 
   // Load the effective config up front (lightweight — no Pi SDK) so the `e`
   // "open in editor" hotkey can read `editor` synchronously at keypress time
@@ -588,11 +580,11 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       .finally(() => setPosting(false));
   };
 
-  // ---- PR overview (`G`) ----
+  // ---- PR overview (`O`) ----
 
   // Fetch (or re-fetch) the overview. `withActivity` pulls the conversation too,
   // which is a second round trip — worth it here, where the conversation IS the
-  // feature. Kept in state so reopening `G` is instant and `R` refreshes.
+  // feature. Kept in state so reopening `O` is instant and `R` refreshes.
   const loadOverview = (silent = false) => {
     if (silent) setOvRefreshing(true);
     else setOv(null);
@@ -606,7 +598,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
       .finally(() => setOvRefreshing(false));
   };
 
-  // `G`. Opens on whatever we already have and refreshes behind it, so it paints
+  // `O`. Opens on whatever we already have and refreshes behind it, so it paints
   // immediately on reopen instead of flashing "loading…" every time.
   const openOverview = () => {
     if (!pr) return setToast("no open PR for this branch");
@@ -614,6 +606,34 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
     if (ov === undefined) loadOverview(false);
     else loadOverview(true);
   };
+
+  // Look up the branch's PR once on mount — the picker offers "post to PR" only
+  // when one exists, and the overview needs one to say anything. Best-effort and
+  // off the critical path: a missing `gh`, no PR, or a non-GitHub remote just
+  // leaves those hidden.
+  //
+  // This is also the boot path for the default overview mode. The fetch goes out
+  // alongside the detection rather than after it — `gh pr view` doesn't need the
+  // detection's answer, and chaining them would make the landing view wait on two
+  // round trips instead of one. Detection then only decides the fallback: no PR
+  // means the overview has nothing to show, so we drop to the diff.
+  useEffect(() => {
+    let live = true;
+    if (initialMode === "overview") loadOverview(false);
+    detectPR().then((found) => {
+      if (!live) return;
+      setPr(found);
+      if (found || initialMode !== "overview") return;
+      setMode((m) => (m === "overview" ? "normal" : m));
+      setToast("no open PR for this branch — showing the diff");
+    });
+    currentUser().then((login) => {
+      if (live) setMe(login);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   // How far the overview can scroll, measured the same way it renders.
   const overviewScrollMax = () => {
@@ -1012,7 +1032,12 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   useInput((input, key) => {
     // ---- Submit target picker ----
     if (mode === "overview") {
-      if (key.escape || input === "q" || input === "G") return setMode("normal");
+      // `O` and Esc cross to the diff. `q` quits outright rather than falling
+      // back to the diff the way it used to: this is where the viewer opens now,
+      // so "quit" has to work from here or the key you reach for first drops you
+      // into a view you didn't ask for.
+      if (key.escape || input === "O") return setMode("normal");
+      if (input === "q") return exit();
       if (input === "R") return loadOverview(true);
       if (input === "p") return openPrInBrowser();
       if (input === "o") return openEnvInBrowser();
@@ -1240,9 +1265,14 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
     // moved to `t`. (Ink reports no Home/End key, so there's no neutral key to
     // put it on — see the Key interface in ink's use-input.)
     if (input === "g") return openVerdict();
-    if (input === "G") return openOverview();
-    // `g` and `G` both went to the review actions, so the cursor jumps live on
-    // t/b now. (Ink reports no Home/End key — see its Key interface.)
+    // The overview toggle is `O`, not `G`: `G` is jump-to-bottom everywhere else
+    // in the world (and in the PR list `orbit-diff prs`), and having it swap the
+    // whole view out from under a vim reflex was worse than the mnemonic was
+    // worth. `G` is unbound here — top/bottom stay on t/b.
+    if (input === "O") return openOverview();
+    // `g` went to the review actions and `G` is deliberately left alone, so the
+    // cursor jumps live on t/b. (Ink reports no Home/End key — see its Key
+    // interface.)
     if (input === "t") return moveCursor(0);
     if (input === "b") return moveCursor(total - 1);
 
@@ -1480,7 +1510,8 @@ function StatusBar({
         <Text color="magenta">g</Text><Dim> review · </Dim>
         <Text color="green">p</Text><Dim> PR · </Dim>
         <Text color="green">o</Text><Dim> env · </Dim>
-        <Text color="green">R</Text><Dim> refresh · esc back</Dim>
+        <Text color="green">R</Text><Dim> refresh · </Dim>
+        <Text color="cyan">O</Text><Dim>/esc diff · q quit</Dim>
       </Bar>
     );
   }
@@ -1527,7 +1558,7 @@ function StatusBar({
       {hasPr ? (
         <>
           <Text color="magenta">g</Text><Dim> review · </Dim>
-          <Text color="cyan">G</Text><Dim> overview · </Dim>
+          <Text color="cyan">O</Text><Dim> overview · </Dim>
         </>
       ) : null}
       <Text color="green">o</Text><Dim> env · </Dim>

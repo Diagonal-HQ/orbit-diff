@@ -1,4 +1,4 @@
-// The viewer's full-screen PR overview (`G`), as data.
+// The viewer's full-screen PR overview (`O`), as data.
 //
 // `overviewRows` turns a loaded PR into a flat list of renderable rows. The
 // order is the priority order: what the PR is waiting on, then recent activity

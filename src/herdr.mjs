@@ -542,7 +542,7 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   // three of its occupants worse.
   //
   // There used to be a fifth thing here, an `orbit-diff pr-status` pane showing
-  // branch/PR/checks/env. The viewer's `G` overview covers all of it and more,
+  // branch/PR/checks/env. The viewer's `O` overview covers all of it and more,
   // so it's gone rather than duplicated in a column too narrow to read. (The
   // tmux backend still builds it; tmux has no tabs, so its one window is the
   // only place that information can live.)

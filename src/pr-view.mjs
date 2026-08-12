@@ -1,6 +1,6 @@
 // Presentation helpers shared by the two places orbit-diff renders PR state:
 // the PR manager's overview/meta panes (`orbit-diff prs`) and the viewer's
-// full-screen overview (`G`). Pure — no Ink, no `gh` — so both can import them
+// full-screen overview (`O`). Pure — no Ink, no `gh` — so both can import them
 // and the two views can't drift apart on what a failing check looks like.
 
 export const CHECK_GLYPH = {

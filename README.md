@@ -78,6 +78,13 @@ orbit-diff main..feature    # a branch range, PR-style
 
 ## Layout
 
+The viewer opens on the [**PR overview**](#the-pr-overview-o) — what the PR is
+and what it's waiting on, which is the question you actually arrive with. `O`
+crosses to the diff and back, from either side. A branch with no PR has no
+overview to show, so it opens straight on the diff instead.
+
+The diff layout:
+
 - **Left rail** — files changed, with `A`/`M`/`D`/`R` status and `+/-` counts (GitHub's "Files changed" list).
 - **Right panel** — the unified diff of the selected file, syntax-highlighted, with old/new line-number gutters. A current-line cursor (`▸` + brightened gutter, and an `L n/N` readout in the status bar) tracks where you are as you scroll; the viewport follows it.
 
@@ -104,7 +111,7 @@ orbit-diff main..feature    # a branch range, PR-style
 | `y` | copy all annotations to the clipboard as a change-request prompt for Claude Code |
 | `r` | open the **submit** picker: apply via Claude Code (or *send to the Claude pane* in a managed review window), post to the GitHub PR (when one exists), or copy |
 | `g` | **finish the review** — approve, approve + merge when ready, or request changes (see below; only when this branch has an open PR) |
-| `G` | **PR overview** — description, conversation, checks and reviewers, full-screen (see below) |
+| `O` | **PR overview** — description, conversation, checks and reviewers, full-screen; this is where the viewer opens, and `O` toggles diff ⇄ overview (see below) |
 | `R` | reload the diff — pick up edits Claude made in its pane |
 | `A` | **AI review** of the diff — findings stream into a side panel (`↑↓`/`j` `k` move · `Enter` jump to it · `p` promote to an annotation · `Esc` close) |
 | `?` | **ask** the model a question about the diff / codebase — the answer streams into a panel (`Ctrl-u`/`Ctrl-d` scroll the transcript · `Tab` past conversations · `Esc` close) |
@@ -309,7 +316,7 @@ tabbing between them. Everything else gets a whole tab: a diff wants the width,
 build output scrolls. That's the only split, and slicing tab 1 into thirds as
 well only made all three of its occupants worse.
 
-There's no `orbit-diff pr-status` panel under herdr: the viewer's `G` overview
+There's no `orbit-diff pr-status` panel under herdr: the viewer's `O` overview
 covers the same ground with room to render it, and the provisioned environment
 now appears at the top of that view's sidebar. The tmux window still builds one,
 because tmux has no tabs and its single window is the only place that
@@ -460,10 +467,12 @@ them as inline comments on the branch's GitHub PR, or copy them out.
 Annotations are **in-memory for the session** — they're gone when you quit, so
 copy (or run) before you leave.
 
-### The PR overview (`G`)
+### The PR overview (`O`)
 
-`G` swaps the file rail and diff for the answer to one question: **is this PR
-waiting on something, and is that something me?**
+This is what the viewer opens on, and what `O` returns you to from the diff: the
+answer to one question — **is this PR waiting on something, and is that something
+me?** It replaces the file rail and diff rather than taking a pane; the
+conversation is the point of it, and that needs the width.
 
 ```
 ┌ #42 Add caching to the resolver chain ──────────────┬ Env (o) ──────┐
@@ -519,7 +528,8 @@ text; entities decode.
 | `g` | the review-verdict menu, without leaving the overview — it returns here afterwards and refreshes |
 | `p` / `o` | open the PR / the provisioned environment in a browser |
 | `R` | refetch |
-| `Esc` / `G` / `q` | back to the diff |
+| `Esc` / `O` | cross to the diff (`O` again comes back) |
+| `q` / `Ctrl-c` | quit — this is the view you land on, so quitting has to work from it |
 
 The sidebar leads with **Env** — the instance and URL your `setup` script
 reported via `orbit-diff env-report`, or `provisioning…` while it's still

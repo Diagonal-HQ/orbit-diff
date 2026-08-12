@@ -294,7 +294,7 @@ export async function runPrManager() {
       worktreePath: wtPath,
       name: windowName({ path: wtPath, branch: target.headRefName }),
       // tmux only: it has no tabs, so its single window is the only place a
-      // status panel can live. The herdr backend drops it — the viewer's `G`
+      // status panel can live. The herdr backend drops it — the viewer's `O`
       // overview covers the same ground with room to render it.
       statusCmd: "orbit-diff pr-status",
       setupCmd,

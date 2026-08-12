@@ -8,7 +8,11 @@ const files = parseDiff(loadDiff(["HEAD~3", "HEAD"]));
 // change-request doc here and exits, and index.jsx runs claude on it. We pass a
 // bag so the smoke test can assert the handoff fires without launching claude.
 const handoff = { doc: null };
-const { lastFrame, stdin } = render(<App files={files} source="HEAD~3..HEAD" handoff={handoff} />);
+// initialMode "normal": the real viewer opens on the PR overview, and everything
+// below this line is about the diff.
+const { lastFrame, stdin } = render(
+  <App files={files} source="HEAD~3..HEAD" handoff={handoff} initialMode="normal" />,
+);
 
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const tick = () => new Promise((r) => setTimeout(r, 20));

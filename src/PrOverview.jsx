@@ -1,4 +1,4 @@
-// The viewer's full-screen PR overview (`G`) — everything about the PR that
+// The viewer's full-screen PR overview (`O`) — everything about the PR that
 // isn't the diff, so a review can be finished without opening a browser.
 //
 // It leads with what the PR is waiting on — failing checks, a review requested

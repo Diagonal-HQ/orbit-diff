@@ -392,7 +392,7 @@ test("a failed agent split reports the workspace so it can still be closed", () 
   expect(built.window).toBe("w5");
 });
 
-// The pr-status pane is gone: `G` covers it, with room to render it properly.
+// The pr-status pane is gone: `O` covers it, with room to render it properly.
 test("no status pane is built, and a statusCmd is ignored rather than run", () => {
   const { run, calls } = buildingHerdr();
   const built = createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({
