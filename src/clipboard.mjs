@@ -4,14 +4,17 @@
 // set the clipboard. Because it's just bytes in the terminal stream, it rides an
 // SSH connection back to the machine your terminal actually runs on — unlike
 // pbcopy/xclip, which would only touch the remote host's clipboard. That makes
-// it the one mechanism that works from a tmux session over SSH.
+// it the one mechanism that works from inside a multiplexer over SSH.
 //
 // Caveats the caller should plan around:
-//   - tmux swallows OSC 52 unless it's wrapped in its DCS passthrough form and
-//     `set -g set-clipboard on` is configured. We do the wrapping here. herdr
-//     needs no equivalent: it's the terminal emulator rather than a layer
-//     inside one, so the unwrapped sequence below is already the right thing —
-//     which is what a herdr pane gets, since `TMUX` is unset there.
+//   - Whatever the *terminal* is running matters here, which is not the same
+//     question as which multiplexer orbit-diff drives (herdr — see mux.mjs).
+//     The viewer runs fine inside tmux or GNU screen, and both swallow OSC 52
+//     unless it's wrapped in their DCS passthrough form — tmux additionally
+//     needs `set -g set-clipboard on`. We do the wrapping here. herdr needs no
+//     equivalent: it's the terminal emulator rather than a layer inside one, so
+//     the unwrapped sequence below is already the right thing — which is what a
+//     herdr pane gets, since `TMUX` is unset there.
 //   - Some terminals (notably macOS Terminal.app) ignore OSC 52 entirely, and
 //     there is no reply, so we can't confirm success. Callers should pair this
 //     with a visible fallback (e.g. writing the text to a file).

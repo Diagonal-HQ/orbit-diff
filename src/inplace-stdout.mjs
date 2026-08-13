@@ -2,7 +2,8 @@
 //
 // Ink redraws each frame by writing `eraseLines(n)` — which clears every line of
 // the previous frame and then rewrites it. The blanked-then-refilled state is
-// the white flash you see scrolling a full-screen TUI, and tmux amplifies it.
+// the white flash you see scrolling a full-screen TUI, and a multiplexer
+// redrawing the pane on top of that amplifies it.
 //
 // eraseLines(n) is a run of `ESC[2K` (clear line) interleaved with `ESC[1A`
 // (cursor up), e.g. `\e[2K\e[1A\e[2K...\e[G`. We strip just the `ESC[2K` clears

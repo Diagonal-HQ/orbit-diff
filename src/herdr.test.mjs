@@ -490,7 +490,7 @@ test("an unreachable herdr reads as an empty world, not an exception", () => {
 test("a plain worktree gets a tagged single-pane workspace", () => {
   const { run, calls } = buildingHerdr();
   expect(createHerdrBackend({ run, env: IN_HERDR }).openPlainWindow("/wt/x", "x").ok).toBe(true);
-  expect(calls[0]).toContain("--focus"); // matches tmux's new-window, which selects it
+  expect(calls[0]).toContain("--focus"); // you asked for it, so you land in it
   expect(calls.some((c) => is("workspace", "report-metadata")(c) && c.includes("orbit_wt=/wt/x"))).toBe(true);
 });
 

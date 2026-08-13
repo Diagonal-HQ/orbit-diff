@@ -1,32 +1,28 @@
-// Which terminal multiplexer are we driving?
+// The terminal multiplexer we drive, if there is one.
 //
 // orbit-diff's review flow needs a handful of things from whatever is managing
-// the terminal: make a detached window of four panes, run a command in each,
-// find a worktree's window again later, read a pane's screen without focusing
-// it, and poke the live agent with a line of text. tmux can do all of that;
-// so can herdr (https://herdr.dev). This module picks one and hands the rest of
-// the codebase a single surface, so nothing outside `tmux.mjs` / `herdr.mjs`
-// has to know which is underneath.
+// the terminal: make a detached workspace of panes, run a command in each, find
+// a worktree's window again later, read a pane's screen without focusing it,
+// and poke the live agent with a line of text. herdr (https://herdr.dev) does
+// all of that, and is the only backend — this module wraps it so nothing
+// outside `herdr.mjs` has to care whether one is present.
 //
-// Selection is by environment, not configuration: a process running inside a
-// herdr pane gets `HERDR_PANE_ID`, one inside tmux gets `TMUX`, and orbit-diff
-// always wants to drive the multiplexer it's *already living in* — driving the
-// other one would build a window you can't see. `ORBIT_MUX=tmux|herdr` forces a
-// backend anyway, for testing one from inside the other.
+// Presence is read from the environment, not configuration: a process running
+// inside a herdr pane gets `HERDR_PANE_ID`. `ORBIT_MUX=herdr` forces the
+// backend on anyway, for driving herdr from a plain terminal.
 //
-// Outside both, the backend is a no-op that reports nothing there. That's the
-// pre-existing "not inside tmux" behaviour, generalized: the PR list, worktree
-// rail, and diff viewer all still work; only opening review windows doesn't.
+// Outside herdr, the backend is a no-op that reports nothing there. The PR
+// list, worktree rail, and diff viewer all still work; only opening review
+// windows doesn't.
 //
 // # Adding to the surface
 //
-// Both backends export the same names. If you add one, add it to both — the
-// null backend below is the checklist of what a backend has to provide.
+// The null backend below is the checklist of what a backend has to provide; if
+// you add a name to `herdr.mjs`, add it here too.
 
-import * as tmux from "./tmux.mjs";
 import * as herdr from "./herdr.mjs";
 
-// What a backend answers with when there's no multiplexer to talk to.
+// What we answer with when there's no multiplexer to talk to.
 const NONE = {
   name: null,
   inMux: () => false,
@@ -38,26 +34,24 @@ const NONE = {
   listTaggedPanes: () => [],
   capturePane: () => null,
   paneAlive: () => false,
-  openPlainWindow: () => ({ ok: false, error: "no multiplexer — start tmux or herdr" }),
-  buildReviewWindow: () => ({ error: "no multiplexer — start tmux or herdr to open a review window" }),
+  openPlainWindow: () => ({ ok: false, error: "no multiplexer — start herdr" }),
+  buildReviewWindow: () => ({ error: "no multiplexer — start herdr to open a review window" }),
   nativeAgentStates: null,
 };
 
-const BACKENDS = { tmux, herdr };
-
 function select(env) {
   const forced = (env.ORBIT_MUX || "").trim().toLowerCase();
-  if (forced) return BACKENDS[forced] || NONE;
-  // herdr first: if both are set we're in a tmux session nested inside a herdr
-  // pane, and herdr is the outer one that actually owns the window we'd build.
+  // An explicit `ORBIT_MUX` is honoured when it names herdr and refused
+  // otherwise — an unrecognized value means the user is asking for something we
+  // don't have, and guessing herdr anyway would drive the wrong thing.
+  if (forced) return forced === "herdr" ? herdr : NONE;
   if (env.HERDR_PANE_ID) return herdr;
-  if (env.TMUX) return tmux;
   return NONE;
 }
 
-// Resolved once. Nothing in a session's lifetime moves it between
-// multiplexers, and re-reading the environment on every pane poll would just
-// be work — but tests can pass an env to get a specific backend.
+// Resolved once. Nothing in a session's lifetime moves it in or out of herdr,
+// and re-reading the environment on every pane poll would just be work — but
+// tests can pass an env to get a specific backend.
 let active = null;
 export function activeMux(env = process.env) {
   if (env !== process.env) return select(env);
@@ -65,21 +59,20 @@ export function activeMux(env = process.env) {
   return active;
 }
 
-// "tmux" | "herdr" | null — for messages that name what the user is running.
+// "herdr" | null — for messages that name what the user is running.
 export function muxName() {
   return activeMux().name;
 }
 
-// Are we inside a multiplexer we can drive at all? Replaces the bare
-// `process.env.TMUX` checks that used to gate the review flow.
+// Are we inside a multiplexer we can drive at all?
 export function inMux() {
   return activeMux().inMux();
 }
 
 // The message shown when an action needs a multiplexer and there isn't one.
-// `verb` completes "start tmux to …".
+// `verb` completes "start herdr to …".
 export function noMuxError(verb) {
-  return `not inside tmux or herdr — start one to ${verb}`;
+  return `not inside herdr — start it to ${verb}`;
 }
 
 export const findWindowByWorktree = (path) => activeMux().findWindowByWorktree(path);
@@ -93,31 +86,27 @@ export const paneAlive = (pane) => activeMux().paneAlive(pane);
 export const openPlainWindow = (path, label) => activeMux().openPlainWindow(path, label);
 export const buildReviewWindow = (opts) => activeMux().buildReviewWindow(opts);
 
-// Close whatever window is holding `path`, in EITHER multiplexer, whether or
-// not we're inside one. Returns the closed window's id, or null if nothing was
-// holding it.
+// Close whatever window is holding `path`, whether or not we're inside herdr.
+// Returns the closed window's id, or null if nothing was holding it.
 //
-// Everything else in this module deliberately talks only to the multiplexer
-// we're running inside — driving the other one builds windows you can't see.
-// Teardown is the exception. `tmux list-windows -a` and `herdr pane list` both
-// answer from a plain shell as long as their server is up, and `orbit-diff
+// Everything else in this module deliberately goes through `activeMux()`, which
+// is a no-op outside herdr. Teardown is the exception: `herdr workspace list`
+// answers from a plain shell as long as the server is up, and `orbit-diff
 // reset` is routinely run from a normal terminal to clean up after a worktree.
-// Gating that on being inside a multiplexer would delete the worktree and the
-// branch while leaving the window and its processes running.
+// Gating that on being inside herdr would delete the worktree and the branch
+// while leaving the window and its processes running.
 //
-// A backend whose server isn't running answers "nothing there", so sweeping
-// both costs one cheap failed call and can't close anything it shouldn't.
+// With the server down, herdr answers "nothing there" rather than throwing, so
+// this costs one cheap failed call and can't close anything it shouldn't.
 export function closeWorktreeWindow(path) {
-  for (const backend of [tmux, herdr]) {
-    const window = backend.findWindowByWorktree(path);
-    if (window && backend.killWindow(window)) return window;
-  }
+  const window = herdr.findWindowByWorktree(path);
+  if (window && herdr.killWindow(window)) return window;
   return null;
 }
 
-// The backend's own agent-state detection, or null when it has none. herdr
-// publishes semantic agent states; tmux can only show you the screen. Callers
-// should treat null as "scrape instead" — see agent-state.mjs.
+// The backend's own agent-state detection, or null when there is none. herdr
+// publishes semantic agent states for the panes it can classify; callers should
+// treat null as "scrape instead" — see agent-state.mjs.
 export function nativeAgentStates() {
   const fn = activeMux().nativeAgentStates;
   return fn ? fn() : null;

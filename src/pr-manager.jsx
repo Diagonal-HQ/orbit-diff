@@ -84,7 +84,7 @@ export async function runPrManager() {
   // instead of spawning a duplicate.
   //
   // If orbit-diff originally created this worktree (a session record exists for
-  // it) but its window is gone — e.g. the tmux/herdr server was restarted since
+  // it) but its window is gone — e.g. the herdr server was restarted since
   // — we rebuild the full four-pane review window rather than a bare shell
   // window, so it comes back exactly as it was first opened. Worktrees
   // orbit-diff didn't create (no session) still just get a plain window rooted
@@ -287,16 +287,12 @@ export async function runPrManager() {
     // should call `orbit-diff env-report` when the environment is ready.
     const setupCmd = renderCommand(config.pr.setup || config.pr.start, { ...target, path: wtPath }) || "";
     const claudeCmd = renderCommand(config.pr.claude, { ...target, path: wtPath }) || "claude";
-    // herdr only — it gets a tab of its own there, and the tmux layout ignores it.
+    // A second agent, in a tab of its own alongside claude.
     const codexCmd = renderCommand(config.pr.codex, { ...target, path: wtPath }) || "";
 
     const built = buildReviewWindow({
       worktreePath: wtPath,
       name: windowName({ path: wtPath, branch: target.headRefName }),
-      // tmux only: it has no tabs, so its single window is the only place a
-      // status panel can live. The herdr backend drops it — the viewer's `O`
-      // overview covers the same ground with room to render it.
-      statusCmd: "orbit-diff pr-status",
       setupCmd,
       claudeCmd,
       codexCmd,

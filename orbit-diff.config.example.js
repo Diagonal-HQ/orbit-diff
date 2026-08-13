@@ -31,13 +31,10 @@ export default {
   // open PR, including drafts. Picking one (enter)
   // makes orbit-diff:
   //   1. create a git worktree for the PR branch,
-  //   2. open a detached review window (a tmux window, or a herdr tab) with
-  //      four panes —
-  //        ┌ status ┬─── claude ───┐
-  //        ├────────┤              │
-  //        │ setup  │              │
-  //        ├──────────── orbit-diff ┤   (bottom, full width)
-  //        └───────────────────────┘
+  //   2. open a detached herdr workspace of three tabs —
+  //        tab 1 "review"  orbit-diff, the whole tab
+  //        tab 2 "agents"  claude │ codex, side by side
+  //        tab 3 "setup"   the provisioning script
   //   3. track it all (PR ↔ worktree ↔ panes ↔ env instance) in a session
   //      registry under ~/.cache/orbit-diff/sessions/ — nothing touches the repo.
   //

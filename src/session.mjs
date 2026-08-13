@@ -1,6 +1,6 @@
 // The review-session registry: orbit-diff's record of the worktrees it spun up
 // for a PR review, and everything it knows about each one — the PR, the git
-// worktree, the tmux window + its three panes (setup / claude / diff), and the
+// worktree, the herdr workspace + its panes (setup / claude / diff), and the
 // provisioned environment (the "EV" instance number the setup script reports
 // back via `orbit-diff env-report`).
 //

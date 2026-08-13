@@ -1,21 +1,20 @@
-// herdr backend for the review-window plumbing: the same surface `tmux.mjs`
-// implements, spoken to herdr's CLI (https://herdr.dev) instead of tmux's.
-// `mux.mjs` picks between the two at startup; nothing else in the codebase
-// should import this module directly.
+// The review-window plumbing, spoken to herdr's CLI (https://herdr.dev).
+// `mux.mjs` wraps this and is what the rest of the codebase imports; nothing
+// else should import this module directly.
 //
 // # Vocabulary
 //
-// orbit-diff says "window" for the unit holding one worktree's review. Under
-// tmux that's a window. Under herdr it's a **workspace** — so every `window` id
-// this module hands out is a herdr workspace id, and `focusWindow`/`killWindow`
-// are `workspace focus`/`workspace close`.
+// orbit-diff says "window" for the unit holding one worktree's review. In herdr
+// that's a **workspace** — so every `window` id this module hands out is a herdr
+// workspace id, and `focusWindow`/`killWindow` are `workspace focus`/`workspace
+// close`.
 //
 // A workspace rather than a tab for three reasons:
 //
 //   1. herdr stores metadata on panes and workspaces but NOT on tabs. A tab can
 //      only be found via its panes' tokens, which is how a half-built tab used
-//      to end up unfindable and unclosable. A workspace is tagged directly, once,
-//      on the container — the same shape tmux gave us with a window option.
+//      to end up unfindable and unclosable. A workspace is tagged directly,
+//      once, on the container that outlives every pane inside it.
 //   2. `workspace list` is global by construction, where the docs never say
 //      whether `pane list` is scoped to the focused workspace. Anchoring
 //      find/focus/close on workspaces means the operations that matter don't
@@ -45,9 +44,9 @@
 // `--no-focus` is unverified, so building a review checks `focused` afterwards
 // and puts the view back if it moved.
 //
-// Everything fails soft, exactly as the tmux backend does: an unreachable or
-// unparseable herdr answers as "nothing there" rather than throwing, so a dead
-// server degrades the worktrees rail instead of taking down the TUI.
+// Everything fails soft: an unreachable or unparseable herdr answers as
+// "nothing there" rather than throwing, so a dead server degrades the worktrees
+// rail instead of taking down the TUI.
 
 import { spawnSync } from "node:child_process";
 import { sessionKey, listSessions } from "./session.mjs";
@@ -177,7 +176,7 @@ function pickBool(value, name, depth = 0) {
 // An id printed by a create/split call, read out of structured output.
 //
 // `bare` allows the fallback for a command that printed nothing but a single
-// id, the way tmux's `-P -F` does. Only pass it when the id you're asking for is
+// id and no JSON around it. Only pass it when the id you're asking for is
 // the command's *primary* subject — `tab create` printing a lone `t9` means the
 // tab, so asking that same output for a pane id must come back empty rather
 // than handing back the tab id.
@@ -242,18 +241,15 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   const ok = (args) => run(args).status === 0;
 
   // `ORBIT_MUX=herdr` counts as being inside herdr — it's an explicit
-  // instruction to drive it. See the matching note in tmux.mjs.
+  // instruction to drive it, so this must honour the same gate `mux.mjs` does.
   const inMux = () => env.ORBIT_MUX === "herdr" || !!env.HERDR_PANE_ID;
 
-  // Every pane herdr knows about that orbit-diff has tagged, in ONE call —
-  // the same contract `listTaggedPanes` has in the tmux backend:
+  // Every pane herdr knows about that orbit-diff has tagged, in ONE call:
   //   { pane, role, worktreePath, command, activity, window, agentStatus }
   //
-  // `activity` is herdr's per-pane `revision` counter, which serves the same
-  // purpose as tmux's `window_activity` timestamp: it changes when the pane
+  // `activity` is herdr's per-pane `revision` counter: it changes when the pane
   // does, so an unchanged pane can be answered from cache without re-reading
-  // its screen. It's a better signal than the tmux one — a counter on the pane
-  // itself rather than a timestamp on its window.
+  // its screen.
   //
   // `command` has no honest herdr equivalent. agent-state.mjs reads it for one
   // thing — telling a running REPL from a pane whose agent exited and left a
@@ -293,15 +289,13 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     return out;
   };
 
-  // Every pane orbit-diff has tagged — the same contract `listTaggedPanes` has
-  // in the tmux backend:
+  // Every pane orbit-diff has tagged:
   //   { pane, role, worktreePath, worktreeKey, command, activity, window, agentStatus }
   //
   // `window` is the pane's WORKSPACE, not its tab, because that's orbit-diff's
   // unit of "one worktree's review". `activity` is herdr's per-pane `revision`
-  // counter, which serves the same purpose as tmux's `window_activity`: it
-  // changes when the pane does, so an unchanged pane can be answered from cache
-  // without re-reading its screen.
+  // counter: it changes when the pane does, so an unchanged pane can be
+  // answered from cache without re-reading its screen.
   //
   // `command` has no honest herdr equivalent. agent-state.mjs reads it for one
   // thing — telling a running REPL from a pane whose agent exited and left a
@@ -322,10 +316,10 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     const workspaces = taggedWorkspaces();
     const byWorkspace = new Map(workspaces.map((w) => [w.window, w]));
 
-    // One global call, as under tmux. If it comes back without any of our
-    // panes but we know of tagged workspaces, `pane list` is scoped to the
-    // focused workspace — so ask each workspace in turn instead. Costs one call
-    // per active review, and only on a server that needs it.
+    // One global call. If it comes back without any of our panes but we know of
+    // tagged workspaces, `pane list` is scoped to the focused workspace — so ask
+    // each workspace in turn instead. Costs one call per active review, and only
+    // on a server that needs it.
     let panes = readPanes([]);
     if (workspaces.length && !panes.some((p) => byWorkspace.has(pickField(p, ["workspace_id"])))) {
       panes = workspaces.flatMap((w) => readPanes(["--workspace", w.window]));
@@ -412,8 +406,8 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   const focusWindow = (id) => ok(["workspace", "focus", id]);
   const killWindow = (id) => ok(["workspace", "close", id]);
 
-  // `pane run` hands the command to herdr rather than typing it, so unlike
-  // tmux's send-keys there's no race with a shell that hasn't drawn its prompt.
+  // `pane run` hands the command to herdr rather than typing it, so there's no
+  // race with a shell that hasn't drawn its prompt yet.
   const runInPane = (pane, cmd) => ok(["pane", "run", pane, cmd]);
 
   // A line of input into whatever's already running in the pane. Text and the
@@ -423,7 +417,7 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   // (herdr also has `agent prompt`, which is purpose-built for handing a prompt
   // to a detected agent. It's the better call for an agent pane specifically,
   // but it needs herdr to have recognized the agent; this path works on any
-  // pane and mirrors what the tmux backend does.)
+  // pane, recognized or not.)
   const sendLine = (pane, text) => {
     if (!ok(["pane", "send-text", pane, text])) return false;
     return ok(["pane", "send-keys", pane, "enter"]);
@@ -445,9 +439,9 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     "--token", `${TOK_WTKEY}=${sessionKey(worktreePath)}`,
   ];
 
-  // Stamp the container. This is the tagging tmux gave us for free with a window
-  // option and herdr tabs can't do at all: one write, on the thing that outlives
-  // every pane inside it. Tokens carry no TTL, so they last as long as it does.
+  // Stamp the container — one write, on the thing that outlives every pane
+  // inside it, which is the tagging herdr tabs can't do at all. Tokens carry no
+  // TTL, so they last as long as the workspace does.
   const tagWorkspace = (workspace, worktreePath) =>
     ok(["workspace", "report-metadata", workspace, "--source", SOURCE, ...wtTokens(worktreePath)]);
 
@@ -462,8 +456,8 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     ]);
 
   // A bare single-pane workspace rooted at `path` — no review tabs, nothing run
-  // in it. Focused on creation, matching tmux's `new-window` (which selects it),
-  // and tagged so a later open re-focuses rather than duplicating.
+  // in it. Focused on creation — you asked for it, so you land in it — and
+  // tagged so a later open re-focuses rather than duplicating.
   const openPlainWindow = (path, name) => {
     const created = run(["workspace", "create", "--cwd", path, "--label", name || "worktree", "--focus"]);
     if (created.status !== 0) {
@@ -528,8 +522,7 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     return built;
   };
 
-  // Build a worktree's review as its own herdr WORKSPACE of four single-pane
-  // tabs:
+  // Build a worktree's review as its own herdr WORKSPACE of three tabs:
   //
   //   tab 1 "review"  orbit-diff, the whole tab
   //   tab 2 "agents"  claude │ codex, side by side
@@ -543,16 +536,14 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   //
   // There used to be a fifth thing here, an `orbit-diff pr-status` pane showing
   // branch/PR/checks/env. The viewer's `O` overview covers all of it and more,
-  // so it's gone rather than duplicated in a column too narrow to read. (The
-  // tmux backend still builds it; tmux has no tabs, so its one window is the
-  // only place that information can live.)
+  // so it's gone rather than duplicated in a column too narrow to read.
   //
   // Why a workspace rather than a tab: herdr stores metadata on panes and
   // workspaces but NOT on tabs, so a tab can only be found via its panes'
   // tokens — which is how a half-built tab used to end up unfindable and
-  // unclosable. A workspace can be tagged directly, once, on the container, the
-  // way tmux tagged a window. It also means closing a review takes any extra
-  // tabs you opened for that worktree with it.
+  // unclosable. A workspace can be tagged directly, once, on the container. It
+  // also means closing a review takes any extra tabs you opened for that
+  // worktree with it.
   //
   // Nothing here focuses anything (see restoreFocus above).
   const buildReviewSpace = ({ worktreePath, name, setupCmd, diffCmd, claudeCmd, codexCmd }) => {
@@ -608,9 +599,8 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   };
 
   // What each review worktree's agent is doing, straight from herdr — no
-  // screen-scraping. This is the one place the herdr backend does something the
-  // tmux backend structurally can't: herdr detects agent state itself and
-  // publishes it as a field, where tmux only ever gave us pixels.
+  // screen-scraping. herdr detects agent state itself and publishes it as a
+  // field, so for the panes it can classify we never have to read pixels.
   //
   // Returns worktree path → "busy" | "blocked" | "awaiting" for every claude
   // pane herdr has an opinion about. Panes it reports as `unknown` are left out

@@ -5,7 +5,7 @@
 // running whatever `pr.claude` launches (Claude Code by default, Codex or
 // anything else if you've configured it). Neither writes its turn state
 // anywhere another process can read, so we read the only thing they *do*
-// publish: the screen. `tmux capture-pane` gives us the pane's visible content
+// publish: the screen. `herdr pane capture` gives us the pane's visible content
 // without focusing it, and the REPL renders an unambiguous status line right
 // above its composer box.
 //
@@ -19,11 +19,10 @@
 //   "awaiting" — turn finished, composer idle, waiting on you
 //   (absent)   — no agent in that worktree, or the pane fell back to a shell
 //
-// All of the above is the *fallback*. Under herdr the multiplexer detects agent
-// state itself and publishes it as a field, so `pollAgentStates` asks the
-// backend first (see `nativeAgentStates` in mux.mjs) and only scrapes the panes
-// the backend has no opinion about. Under tmux there is no such field and every
-// pane goes through the classifier below.
+// All of the above is the *fallback*. herdr detects agent state itself and
+// publishes it as a field, so `pollAgentStates` asks the backend first (see
+// `nativeAgentStates` in mux.mjs) and only scrapes the panes the backend has no
+// opinion about — the ones it reports as `unknown`.
 
 import { listTaggedPanes, capturePane, nativeAgentStates } from "./mux.mjs";
 
@@ -71,21 +70,20 @@ export function classifyAgentPane(text) {
   return "awaiting";
 }
 
-// Re-read a pane at most every this many polls even when tmux reports no new
-// output for its window. Purely a self-heal: the activity timestamp is a sound
-// filter (a REPL that changes state necessarily draws something), but a missed
-// tick would otherwise pin a glyph forever.
+// Re-read a pane at most every this many polls even when the backend reports no
+// new output for it. Purely a self-heal: the activity counter is a sound filter
+// (a REPL that changes state necessarily draws something), but a missed tick
+// would otherwise pin a glyph forever.
 const FORCE_EVERY = 6;
 
 // Build the poller the PR manager hands to the TUI. Returns a function mapping
 // worktree path → state for every review pane the multiplexer currently knows
 // about.
 //
-// Cost per call is one `list-panes` plus one `capture-pane` for each agent pane
-// that has printed something since the last look — so a screen full of settled
-// worktrees costs a single tmux invocation, and a busy one costs a handful.
-// Under herdr the second half of that mostly disappears: states arrive with the
-// pane list, and only panes herdr reports as `unknown` get read.
+// Cost per call is one `pane list` plus one `pane capture` for each agent pane
+// herdr has no opinion about that has printed something since the last look —
+// so a screen full of settled worktrees costs a single herdr invocation, and a
+// busy one costs a handful.
 //
 // Everything is injectable so the tests don't need a multiplexer running.
 export function createAgentPoller({
@@ -124,7 +122,7 @@ export function createAgentPoller({
         cache.delete(p.pane);
         continue;
       }
-      // The REPL exited and left a shell (or tmux couldn't read the command).
+      // The REPL exited and left a shell (or we couldn't read the command).
       if (!p.command || SHELLS.has(p.command)) {
         cache.delete(p.pane);
         continue;

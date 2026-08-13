@@ -187,26 +187,23 @@ window and `d` cleans it up like any other worktree.
 
 #### Which agents are waiting on you
 
-How this works depends on which multiplexer you're in.
+Mostly, it just asks. herdr detects agent state itself and publishes it as a
+field on the pane, so orbit-diff reads `working` / `blocked` / `idle` / `done`
+straight off the pane list — no guessing.
 
-**Under herdr**, it just asks. herdr detects agent state itself and publishes it
-as a field on the pane, so orbit-diff reads `working` / `blocked` / `idle` /
-`done` straight off the pane list — no guessing.
-
-**Under tmux**, there's nothing to ask. Neither Claude Code nor Codex publishes
-its turn state anywhere another process can read it, so orbit-diff reads the one
-thing they do publish: the screen. Every couple of seconds it looks at each
-review window's `claude` pane with `tmux capture-pane` — no focusing, nothing
-stolen — and tells a live spinner ("`· Tempering… (1m 26s · ↓ 4.8k tokens)`")
-from a settled composer. Panes are only re-read when tmux says the window has
-printed something since the last look, so a rail of idle worktrees costs one
-`tmux list-panes` per tick.
+For panes herdr reports as `unknown` there's nothing to ask, and neither Claude
+Code nor Codex publishes its turn state anywhere another process can read it. So
+orbit-diff falls back to the one thing they do publish: the screen. Every couple
+of seconds it looks at those panes with `herdr pane capture` — no focusing,
+nothing stolen — and tells a live spinner ("`· Tempering… (1m 26s · ↓ 4.8k
+tokens)`") from a settled composer. A pane is only re-read when herdr's revision
+counter says it has drawn something since the last look, so a rail of idle
+worktrees costs one `herdr pane list` per tick.
 
 That screen-reading is a hint rather than a guarantee: an unfamiliar screen
 reports "waiting" rather than erroring, and a worktree whose agent has exited
-(leaving a bare shell) simply loses its glyph. It's also the fallback under
-herdr, for panes herdr itself reports as `unknown`. Worktrees opened with `b`
-have no agent pane, so they never carry one.
+(leaving a bare shell) simply loses its glyph. Worktrees opened with `b` have no
+agent pane, so they never carry one.
 
 ### The review flow
 
@@ -215,27 +212,24 @@ you stay in the PR list (the new window opens in the background) and a spinner o
 the PR line tracks progress. Under the hood it:
 
 1. **creates a git worktree** for the PR branch (fetching it if it's remote-only),
-2. **opens a detached window** — a tmux window or a herdr tab — split into four panes —
+2. **opens a detached herdr workspace** of three tabs —
 
    ```
-   ┌─ status ─┬──────── claude ───────┐
-   ├──────────┤                       │
-   │  setup   │                       │
-   ├───────────────── orbit-diff ─────┤
-   └───────────────────────────────────┘
+   tab 1  "review"   orbit-diff, the whole tab
+   tab 2  "agents"   claude │ codex, side by side
+   tab 3  "setup"    the provisioning script
    ```
 
-   top-left shows a live **status** panel (branch, PR state/assignee/
-   reviewers/checks, provisioned env), stacked above `setup` (which runs
-   inside the worktree), top-right runs `claude` (a live session, ready to
-   talk to), and the bottom, full-width pane runs `orbit-diff` on the PR's diff;
+   `review` runs `orbit-diff` on the PR's diff, `agents` runs `claude` and
+   `codex` as live sessions ready to talk to, and `setup` runs your `setup`
+   command inside the worktree;
 3. **tracks it all** — the PR ↔ worktree ↔ panes ↔ env instance — in a
    session registry under `~/.cache/orbit-diff/sessions/` (nothing is written
    into the repo).
 
 Because the diff viewer and Claude run side by side, sending annotations to
 Claude (the **submit** picker's *"Send to Claude pane"*) routes them into that
-open session (`tmux send-keys` / `herdr pane send-text`) instead of taking over
+open session (`herdr pane send-text`) instead of taking over
 the diff — then press
 `R` in the viewer to reload once Claude has edited. Outside a managed window the
 old behaviour stands (orbit-diff steps aside for a fresh `claude`).
@@ -280,8 +274,8 @@ export default {
   // …model/provider settings…
   pr: {
     setup: "make dev-env {branch} && orbit-diff env-report $EV_INSTANCE",
-    claude: "claude",           // top-right pane (tmux) or its own tab (herdr)
-    codex: "codex",             // a second agent in its own tab; herdr only
+    claude: "claude",           // left of the "agents" tab
+    codex: "codex",             // a second agent, right of it
     done: "tear-down {branch}", // your env teardown; the worktree is removed for you
     worktreeDir: "",            // "" ⇒ sibling "<repo>-worktrees/<branch>"
     worktreeRefreshMinutes: 2,  // auto-refresh the worktrees pane (0 disables)
@@ -289,21 +283,19 @@ export default {
 };
 ```
 
-Starting a review needs to be **inside a multiplexer** — either
-[tmux](https://github.com/tmux/tmux) or [herdr](https://herdr.dev). Requires the
+Starting a review needs to be **inside [herdr](https://herdr.dev)**. Requires the
 [`gh`](https://cli.github.com) CLI, authenticated (`gh auth login`) with a GitHub
 remote. (`pr.start` is still honoured as a legacy alias for `pr.setup`.)
 
-#### tmux or herdr
+#### herdr
 
-orbit-diff drives whichever multiplexer it's already running inside, detected
-from the environment — `HERDR_PANE_ID` for herdr, `TMUX` for tmux. There's
-nothing to configure, and if you're in a tmux session nested inside a herdr pane
-it drives herdr, which is the one that owns the window it would build. Set
-`ORBIT_MUX=tmux|herdr` to force a backend.
+There's nothing to configure: orbit-diff notices it's inside herdr from
+`HERDR_PANE_ID` in the environment. Set `ORBIT_MUX=herdr` to drive a running
+herdr server from a plain terminal instead. Outside herdr everything else still
+works — the PR list, the worktrees rail, the diff viewer — and only opening
+review windows is unavailable.
 
-**The review environment is shaped differently.** Under tmux a review is one
-window of four panes. Under herdr it's a **workspace of three tabs**:
+A review is a herdr **workspace** of three tabs:
 
 ```
 tab 1 "review"   orbit-diff, the whole tab
@@ -316,46 +308,31 @@ tabbing between them. Everything else gets a whole tab: a diff wants the width,
 build output scrolls. That's the only split, and slicing tab 1 into thirds as
 well only made all three of its occupants worse.
 
-There's no `orbit-diff pr-status` panel under herdr: the viewer's `O` overview
-covers the same ground with room to render it, and the provisioned environment
-now appears at the top of that view's sidebar. The tmux window still builds one,
-because tmux has no tabs and its single window is the only place that
-information can live.
+There's no `orbit-diff pr-status` panel: the viewer's `O` overview covers the
+same ground with room to render it, and the provisioned environment appears at
+the top of that view's sidebar.
 
-A workspace also means closing a review (`d`) takes any extra tabs you opened
-for that worktree with it, rather than orphaning them.
+A workspace rather than a tab means the review can be tagged on the container
+itself — and that closing one (`d`) takes any extra tabs you opened for that
+worktree with it, rather than orphaning them.
 
-`pr.codex` is herdr-only — the tmux layout has no room for a second agent.
+Two things worth knowing about how herdr shapes this:
 
-Other differences worth knowing:
+- **An agent that exits**, leaving a bare shell in its pane, still reads as
+  "waiting on you" — herdr exposes no pane foreground process to notice it with.
+- **The pane you land on** when you jump to a review is the overview pane. herdr
+  can only focus panes directionally, and the flags that would set it outright
+  risk yanking you out of the PR list — not worth it to save one keystroke.
 
-- **Agent state** is reported by herdr rather than scraped off the screen (see
-  above) — more reliable, and it doesn't cost a pane read per tick.
-- **An agent that exits**, leaving a bare shell in its pane, loses its glyph
-  under tmux (which can see the pane's foreground process) but reads as
-  "waiting on you" under herdr, which exposes no equivalent.
-- **The overview pane** is sized as a fraction of its column under herdr, where
-  tmux pins it to exactly 8 rows. herdr's split API takes ratios only, so on a
-  short terminal it can clip where the tmux one wouldn't.
-- **The pane you land on** when you jump to a review is the diff viewer under
-  tmux and the overview pane under herdr. herdr can only focus panes
-  directionally, and the flags that would set it outright risk yanking you out
-  of the PR list — not worth it to save one keystroke.
-- **Clipboard** needs no `set-clipboard` setting under herdr: it's the terminal
-  emulator itself, so OSC 52 goes straight through (see below).
+`orbit-diff reset` is the one command that doesn't care whether you're inside
+herdr — it closes a worktree's workspace from a plain shell, since it's routinely
+run from outside.
 
-`orbit-diff reset` is the one command that doesn't care which multiplexer you're
-in — it closes a worktree's window in either, from a plain shell, since it's
-routinely run from outside both.
-
-The herdr backend is written against herdr's documented CLI and one real
-`pane list` payload, but hasn't been exercised end to end against a running
-herdr server. Where the docs are silent it discovers rather than guesses — it
-finds reported metadata wherever herdr puts it, matches worktrees on a hash as
-well as a path, and checks `focused` after building a review tab so it can put
-the view back if creation ever turns out to steal it. If something in the
-review-window flow still misbehaves there, that's the place to look, and
-`ORBIT_MUX=tmux` gets you back to the well-worn path.
+Where herdr's docs are silent the backend discovers rather than guesses: it finds
+reported metadata wherever herdr puts it, matches worktrees on a hash as well as
+a path, and checks `focused` after building a review so it can put the view back
+if creation ever turns out to steal it. If something in the review-window flow
+misbehaves, `src/herdr.mjs` is the place to look.
 
 ## AI review & Q&A
 

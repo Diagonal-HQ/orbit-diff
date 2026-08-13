@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { classifyAgentPane, createAgentPoller } from "./agent-state.mjs";
 
-// The fixtures below are real `tmux capture-pane` output from Claude Code panes,
-// trimmed to the bottom of the screen — the part the classifier looks at.
+// The fixtures below are real captured output from Claude Code panes, trimmed
+// to the bottom of the screen — the part the classifier looks at.
 
 const BUSY = `
   Bash(tmux capture-pane -p -t "$TMUX_PANE" | grep -n)

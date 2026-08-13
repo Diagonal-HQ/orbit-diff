@@ -1,6 +1,6 @@
 // Destructive recovery for a broken review worktree.
 //
-// `orbit-diff reset <branch>` removes only local state: tagged tmux windows,
+// `orbit-diff reset <branch>` removes only local state: tagged herdr workspaces,
 // registered or stale worktree directories, Git's worktree bookkeeping, the
 // local branch ref, path-hashed session records, and per-repo/branch caches.
 // The remote branch is deliberately untouched, so starting the PR again creates

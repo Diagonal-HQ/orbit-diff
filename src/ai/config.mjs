@@ -40,13 +40,11 @@ export const DEFAULTS = {
   // commands plug your own tooling into that flow. Tokens {branch} {base}
   // {number} {repo} {title} {url} are substituted (shell-quoted); commands run in
   // your login shell so aliases/functions resolve.
-  //   setup   — runs in the top-left pane inside the fresh worktree (build env,
+  //   setup   — runs in the "setup" tab inside the fresh worktree (build env,
   //             deps, etc). Report the provisioned instance back to orbit-diff
   //             with `orbit-diff env-report <instance>` as its last step.
-  //   claude  — the Claude CLI (default `claude`). Under tmux it runs in the
-  //             top-right pane; under herdr it gets a tab of its own.
-  //   codex   — a second agent CLI (default `codex`), given its own tab.
-  //             herdr only: the tmux layout has no room for it.
+  //   claude  — the Claude CLI (default `claude`), on the left of the "agents" tab.
+  //   codex   — a second agent CLI (default `codex`), on the right of it.
   //   done    — YOUR env teardown when you finish (destroy the instance, etc.).
   //             orbit-diff always removes the git worktree itself, after `done`
   //             runs — so `done` only needs your custom teardown, not worktree
@@ -100,11 +98,11 @@ export default {
   // into that flow. Tokens {branch} {base} {number} {repo} {title} {url} are
   // shell-quoted; commands run in your login shell so aliases/functions work.
   pr: {
-    setup: "", //  e.g. "make dev-env {branch}" — runs in the top-left pane inside
+    setup: "", //  e.g. "make dev-env {branch}" — runs in the "setup" tab inside
     //             the new worktree. End it with \`orbit-diff env-report <instance>\`
     //             so orbit-diff can track the provisioned environment.
-    claude: "claude", // the Claude CLI — top-right pane (tmux) or its own tab (herdr)
-    codex: "codex", //  a second agent, in its own tab. herdr only
+    claude: "claude", // the Claude CLI — left of the "agents" tab
+    codex: "codex", //  a second agent — right of it
     done: "", //   e.g. "tear-down {branch}" — YOUR env teardown; orbit-diff always
     //             removes the git worktree itself afterwards
     mergeMethod: "", // "squash" | "merge" | "rebase" for \`g\`'s approve-and-merge;

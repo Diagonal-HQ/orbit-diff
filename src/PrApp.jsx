@@ -77,7 +77,7 @@ export function PrApp({ loadPRs, loadAllPRs, findPrForBranch = async () => null,
   // worktree path → "busy" | "blocked" | "awaiting": what the coding agent in
   // each review window is doing, read off its pane (see agent-state.mjs).
   const [agentStates, setAgentStates] = useState({});
-  // "tmux window" / "herdr window", or just "window" when we aren't in either.
+  // "herdr window", or just "window" when we aren't inside herdr.
   const winLabel = mux ? `${mux} window` : "window";
   const [selected, setSelected] = useState(0);
   const [selectedWt, setSelectedWt] = useState(0);
@@ -975,7 +975,7 @@ function StatusBar({ focus, setupCmd, mux }) {
       </>
     ) : (
       <>
-        <Text bold>enter</Text> {mux ? "start" : <Text dimColor>start (needs tmux or herdr)</Text>}  <Text bold>o</Text> open  <Text bold>d</Text> finish
+        <Text bold>enter</Text> {mux ? "start" : <Text dimColor>start (needs herdr)</Text>}  <Text bold>o</Text> open  <Text bold>d</Text> finish
       </>
     );
   return (
