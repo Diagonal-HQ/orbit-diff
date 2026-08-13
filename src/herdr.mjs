@@ -30,10 +30,11 @@
 //                      (plus both worktree tokens, so a pane is still placeable
 //                       if the workspace tag is ever lost)
 //
-// The hash is belt-and-braces. herdr documents a 1-32 ASCII charset limit on
-// token *names* and says nothing about values; if long slash-bearing paths turn
-// out not to round-trip, the hash still identifies the worktree and lookups keep
-// working. Only the agent glyph needs the path itself.
+// The hash is not belt-and-braces, it's load-bearing: **herdr truncates token
+// values at 80 characters**, which most real worktree paths run past. The docs
+// only limit token *names* (1-32 ASCII) and say nothing about values, so this
+// was found the hard way — see `makePlacer`, which is why nothing in here trusts
+// `orbit_wt` without checking it against the hash first.
 //
 // # Where the docs are silent
 //
@@ -227,8 +228,9 @@ function tokensOf(pane, depth = 0) {
   return null;
 }
 
-// hash → worktree path, over every worktree orbit-diff has a session for. Only
-// consulted when `orbit_wt` didn't survive the round trip.
+// hash → worktree path, over every worktree orbit-diff has a session for. The
+// authority on what a `orbit_wtkey` means when the path token didn't survive the
+// round trip — see `makePlacer`.
 function sessionPathsByKey() {
   const map = new Map();
   for (const s of listSessions()) {
@@ -244,28 +246,44 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   // instruction to drive it, so this must honour the same gate `mux.mjs` does.
   const inMux = () => env.ORBIT_MUX === "herdr" || !!env.HERDR_PANE_ID;
 
-  // Every pane herdr knows about that orbit-diff has tagged, in ONE call:
-  //   { pane, role, worktreePath, command, activity, window, agentStatus }
+  // Which worktree is this workspace/pane actually for?
   //
-  // `activity` is herdr's per-pane `revision` counter: it changes when the pane
-  // does, so an unchanged pane can be answered from cache without re-reading
-  // its screen.
+  // **herdr truncates token VALUES at 80 characters.** Verified against a live
+  // `agent list` on 2026-08-13: `orbit_wt` came back as
+  // `…/worktrees/de-5407-support-images-within-th` — exactly 80 characters, cut
+  // mid-word — while the same pane's `cwd` carried the path in full. The docs
+  // only ever mention a 1-32 limit on token *names*, which is why this was
+  // written as a belt-and-braces `orbit_wtkey` rather than a known constraint.
   //
-  // `command` has no honest herdr equivalent. agent-state.mjs reads it for one
-  // thing — telling a running REPL from a pane whose agent exited and left a
-  // bare shell — and PaneInfo carries no foreground process name to answer it.
+  // A clipped path is worse than a missing one: it's non-empty, so it reads as
+  // an answer, and every consumer that compares it to a real worktree path
+  // silently misses. That cost the agent glyph on every worktree whose path runs
+  // past 80 characters, while `orbit_wtkey` (16 hex chars, never clipped) kept
+  // focus/close/reset working — which is exactly why only the rail broke.
   //
-  // It must NOT be derived from `agent_session`: herdr populates that "when an
-  // official integration has reported a native session reference" and omits it
-  // otherwise, so a perfectly live screen-detected agent has none. Reporting ""
-  // there would make agent-state.mjs skip the pane as a shell, and a worktree
-  // whose agent herdr can't classify would lose its glyph entirely — the exact
-  // case the scrape fallback exists to cover.
+  // So don't trust a path token: verify it. The key is the hash of the true
+  // path, so a candidate that rehashes to it round-tripped intact. Candidates
+  // are tried in order, then the key is resolved through orbit-diff's own
+  // session records. Returns "" when nothing places it.
   //
-  // So a tagged `claude` pane always reports something non-empty: we launched
-  // `pr.claude` in it ourselves, so it is an agent pane by construction. The
-  // trade is that under herdr we can't notice the REPL exiting, and such a
-  // worktree reads as "waiting on you" rather than dropping its glyph.
+  // The session read is lazy and at most once per placer, so a rail whose panes
+  // all report a usable `cwd` never touches the disk.
+  const makePlacer = () => {
+    let byKey = null;
+    return (key, candidates) => {
+      for (const c of candidates) {
+        if (!c) continue;
+        // Nothing to verify against — an unhashed candidate is all we have.
+        if (!key) return c;
+        if (sessionKey(c) === key) return c;
+      }
+      if (!key) return "";
+      if (resolveKey) return resolveKey(key) || "";
+      if (!byKey) byKey = sessionPathsByKey();
+      return byKey.get(key) || "";
+    };
+  };
+
   // Every workspace orbit-diff has tagged: { window, worktreePath, worktreeKey }.
   //
   // The workspace IS the container for a worktree's review, so this is the
@@ -274,15 +292,15 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   // may or may not be scoped to the focused workspace (herdr's docs don't say).
   // Anchoring find/focus/close here means the operations that matter don't
   // depend on that unknown; only the agent glyph does.
-  const taggedWorkspaces = () => {
+  const taggedWorkspaces = (place = makePlacer()) => {
     const res = run(["workspace", "list"]);
     if (res.status !== 0) return [];
     const out = [];
     for (const w of pickArray(parseJson(res.stdout), "workspaces")) {
       const tokens = tokensOf(w) || {};
-      const worktreePath = tokens[TOK_WT] || "";
       const worktreeKey = tokens[TOK_WTKEY] || "";
-      if (!worktreePath && !worktreeKey) continue;
+      if (!tokens[TOK_WT] && !worktreeKey) continue;
+      const worktreePath = place(worktreeKey, [tokens[TOK_WT], pickField(w, ["cwd"])]);
       const window = pickField(w, ["workspace_id", "id"]);
       if (window) out.push({ window, worktreePath, worktreeKey });
     }
@@ -313,7 +331,8 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   // that under herdr we can't notice the REPL exiting, and such a worktree reads
   // as "waiting on you" rather than dropping its glyph.
   const listTaggedPanes = () => {
-    const workspaces = taggedWorkspaces();
+    const place = makePlacer();
+    const workspaces = taggedWorkspaces(place);
     const byWorkspace = new Map(workspaces.map((w) => [w.window, w]));
 
     // One global call. If it comes back without any of our panes but we know of
@@ -325,7 +344,6 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
       panes = workspaces.flatMap((w) => readPanes(["--workspace", w.window]));
     }
 
-    let byKey = null; // built lazily — only if some pane lost its path token
     const out = [];
     for (const p of panes) {
       const tokens = tokensOf(p) || {};
@@ -336,16 +354,17 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
       const fromWorkspace = byWorkspace.get(window);
 
       // The workspace's own tag is the most reliable source — it's written once
-      // on the container and can't be lost by a pane being replaced.
+      // on the container and can't be lost by a pane being replaced. Its path
+      // has already been through the placer, so it's whole or empty, never
+      // clipped; `foreground_cwd` and `cwd` are herdr's own untruncated view of
+      // where the pane is sitting, and back it up.
       const worktreeKey = tokens[TOK_WTKEY] || (fromWorkspace && fromWorkspace.worktreeKey) || "";
-      let worktreePath = tokens[TOK_WT] || (fromWorkspace && fromWorkspace.worktreePath) || "";
-      if (!worktreePath && worktreeKey) {
-        if (resolveKey) worktreePath = resolveKey(worktreeKey) || "";
-        else {
-          if (!byKey) byKey = sessionPathsByKey();
-          worktreePath = byKey.get(worktreeKey) || "";
-        }
-      }
+      const worktreePath = place(worktreeKey, [
+        fromWorkspace && fromWorkspace.worktreePath,
+        tokens[TOK_WT],
+        pickField(p, ["foreground_cwd"]),
+        pickField(p, ["cwd"]),
+      ]);
       // A pane we can't place at all is useless. One we can place only by hash
       // is still worth reporting: `findWindowByWorktree` matches on either, so
       // focus/close/cleanup keep working even if the path token didn't survive
@@ -426,10 +445,19 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   // The pane's visible screen, or null if it's gone. `--source visible` is the
   // current viewport — the equivalent of `capture-pane -p`, and likewise the
   // right source for a full-screen TUI, where scrollback holds nothing useful.
+  //
+  // The documented flags are `--source` and `--lines` (`herdr pane read w1:p1
+  // --source visible --lines 80`); there is no `--format`, and passing one we
+  // invented risks the whole call being rejected — which would fail silently as
+  // "pane's gone" and take the scrape fallback out entirely.
+  //
+  // What it prints isn't documented either, so take either shape: a JSON reply
+  // gets its screen text pulled out, anything else is already the screen.
   const capturePane = (pane) => {
-    const res = run(["pane", "read", pane, "--source", "visible", "--format", "text"]);
+    const res = run(["pane", "read", pane, "--source", "visible", "--lines", "80"]);
     if (res.status !== 0) return null;
-    return res.stdout || "";
+    const text = pickField(parseJson(res.stdout), ["text", "content", "screen", "lines"]);
+    return text === null ? res.stdout || "" : text;
   };
 
   const paneAlive = (pane) => ok(["pane", "get", pane]);

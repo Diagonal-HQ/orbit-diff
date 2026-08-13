@@ -194,7 +194,7 @@ straight off the pane list — no guessing.
 For panes herdr reports as `unknown` there's nothing to ask, and neither Claude
 Code nor Codex publishes its turn state anywhere another process can read it. So
 orbit-diff falls back to the one thing they do publish: the screen. Every couple
-of seconds it looks at those panes with `herdr pane capture` — no focusing,
+of seconds it looks at those panes with `herdr pane read` — no focusing,
 nothing stolen — and tells a live spinner ("`· Tempering… (1m 26s · ↓ 4.8k
 tokens)`") from a settled composer. A pane is only re-read when herdr's revision
 counter says it has drawn something since the last look, so a rail of idle

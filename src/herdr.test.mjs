@@ -220,6 +220,69 @@ test("a worktree path that didn't survive as a token resolves through its hash",
   expect(h.listTaggedPanes()[0].worktreePath).toBe("/wt/feature");
 });
 
+// The bug this whole placer exists for. herdr truncates token VALUES at 80
+// characters — observed live on 2026-08-13, where a 102-character worktree path
+// came back cut mid-word while the same pane's `cwd` carried it in full.
+//
+// A clipped path is worse than a missing one: it's non-empty, so the old code
+// took it as the answer and keyed the rail on a path no worktree has. Reviews
+// still opened and closed (those match on the hash), so the only symptom was the
+// agent glyph quietly vanishing on any worktree with a long path.
+const LONG_WT = "/Users/owen/development/diagonal-envs/worktrees/de-5407-support-images-within-the-liquid-email-layouts";
+const CLIPPED = LONG_WT.slice(0, 80);
+
+test("a token clipped at herdr's 80-character limit is never mistaken for a path", () => {
+  expect(CLIPPED).toBe("/Users/owen/development/diagonal-envs/worktrees/de-5407-support-images-within-th");
+  const ws = reply("workspace_list", {
+    workspaces: [{ workspace_id: "w1E", tokens: { orbit_wt: CLIPPED, orbit_wtkey: sessionKey(LONG_WT) } }],
+  });
+  const panes = reply("pane_list", {
+    panes: [{
+      pane_id: "w1E:p2", workspace_id: "w1E", agent_status: "idle",
+      cwd: LONG_WT, foreground_cwd: LONG_WT,
+      tokens: { orbit_role: "claude", orbit_wt: CLIPPED, orbit_wtkey: sessionKey(LONG_WT) },
+    }],
+  });
+  const { run } = fakeHerdr([[is("workspace", "list"), ws], [is("pane", "list"), panes]]);
+  // No session store and no resolver: the pane's own cwd is what saves it, and
+  // it's trusted only because it rehashes to the key we wrote.
+  const h = createHerdrBackend({ run, env: IN_HERDR, resolveKey: () => null });
+
+  expect(h.listTaggedPanes()[0].worktreePath).toBe(LONG_WT);
+  expect(h.nativeAgentStates()).toEqual({ [LONG_WT]: "awaiting" });
+  expect(h.findWindowByWorktree(LONG_WT)).toBe("w1E");
+});
+
+test("a clipped token with no cwd to back it up resolves through the hash", () => {
+  const ws = reply("workspace_list", {
+    workspaces: [{ workspace_id: "w1E", tokens: { orbit_wt: CLIPPED, orbit_wtkey: sessionKey(LONG_WT) } }],
+  });
+  const panes = reply("pane_list", {
+    panes: [{ pane_id: "w1E:p2", workspace_id: "w1E", agent_status: "done", tokens: { orbit_role: "claude" } }],
+  });
+  const { run } = fakeHerdr([[is("workspace", "list"), ws], [is("pane", "list"), panes]]);
+  const h = createHerdrBackend({
+    run,
+    env: IN_HERDR,
+    resolveKey: (key) => (key === sessionKey(LONG_WT) ? LONG_WT : null),
+  });
+  expect(h.nativeAgentStates()).toEqual({ [LONG_WT]: "awaiting" });
+});
+
+test("a cwd that isn't the tagged worktree is refused", () => {
+  const ws = reply("workspace_list", {
+    workspaces: [{ workspace_id: "w1", tokens: { orbit_wtkey: sessionKey("/wt/feature") } }],
+  });
+  // The agent cd'd somewhere else, so its cwd is a real directory that is not
+  // this worktree. Placing the glyph there would light up the wrong row.
+  const panes = reply("pane_list", {
+    panes: [{ pane_id: "w1:p9", workspace_id: "w1", cwd: "/wt/feature/src", tokens: { orbit_role: "claude" } }],
+  });
+  const { run } = fakeHerdr([[is("workspace", "list"), ws], [is("pane", "list"), panes]]);
+  const h = createHerdrBackend({ run, env: IN_HERDR, resolveKey: () => null });
+  expect(h.listTaggedPanes()[0].worktreePath).toBe("");
+});
+
 test("a pane with no worktree anywhere is dropped", () => {
   const { run } = fakeHerdr([
     [is("workspace", "list"), reply("workspace_list", { workspaces: [] })],
@@ -281,7 +344,10 @@ test("capturePane reads the visible viewport, and reports a dead pane as null", 
   const alive = fakeHerdr([[is("pane", "read"), "· Tempering… (1m 26s)\n"]]);
   const h = createHerdrBackend({ run: alive.run, env: IN_HERDR });
   expect(h.capturePane("w1:p9")).toBe("· Tempering… (1m 26s)\n");
-  expect(alive.calls[0]).toEqual(["pane", "read", "w1:p9", "--source", "visible", "--format", "text"]);
+  // `--source` and `--lines` are the documented flags. `--format` was invented,
+  // and an invented flag is worse than a missing one: a rejected call exits
+  // non-zero, which reads as "the pane is gone" and silently removes the glyph.
+  expect(alive.calls[0]).toEqual(["pane", "read", "w1:p9", "--source", "visible", "--lines", "80"]);
 
   const dead = fakeHerdr([[is("pane", "read"), "", 1]]);
   expect(createHerdrBackend({ run: dead.run, env: IN_HERDR }).capturePane("w1:p9")).toBe(null);
