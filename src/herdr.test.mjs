@@ -535,3 +535,118 @@ test("the guard is skipped entirely when herdr didn't export our tab id", () => 
   createHerdrBackend({ run, env: { HERDR_PANE_ID: "w1:p1" } }).buildReviewWindow({ worktreePath: "/wt/x" });
   expect(calls.some((c) => c[1] === "get" || c[1] === "focus")).toBe(false);
 });
+
+// ---- labelling the review tab with the provisioned environment ----
+//
+// The tab bar is the only surface visible from every tab of a review, so the
+// "EV11" instance goes there rather than only in the viewer's status bar. It
+// arrives late — `orbit-diff env-report` runs when the setup script finishes —
+// so this has to work on an already-built review, not just at creation.
+
+const REVIEW_WORLD = () =>
+  fakeHerdr([
+    [is("workspace", "list"), reply("workspace_list", {
+      workspaces: [{ workspace_id: "w5", tokens: { orbit_wt: "/wt/x", orbit_wtkey: sessionKey("/wt/x") } }],
+    })],
+    [is("pane", "list"), reply("pane_list", {
+      panes: [
+        { pane_id: "w5:p1", tab_id: "w5:t0", workspace_id: "w5", tokens: { orbit_role: "diff" } },
+        { pane_id: "w5:p2", tab_id: "w5:t1", workspace_id: "w5", tokens: { orbit_role: "claude" } },
+      ],
+    })],
+  ]);
+
+const renames = (calls) => calls.filter((c) => is("tab", "rename")(c));
+
+test("labelReviewTab renames the tab holding the diff pane, not the agents tab", () => {
+  const { run, calls } = REVIEW_WORLD();
+  expect(createHerdrBackend({ run, env: IN_HERDR }).labelReviewTab("/wt/x", "review EV11")).toBe(true);
+  expect(renames(calls)).toHaveLength(1);
+  expect(renames(calls)[0]).toContain("w5:t0");
+  expect(renames(calls)[0]).toContain("review EV11");
+});
+
+test("a worktree with no open review is a silent no-op, not an error", () => {
+  const { run, calls } = REVIEW_WORLD();
+  expect(createHerdrBackend({ run, env: IN_HERDR }).labelReviewTab("/wt/nothing-here", "review EV11")).toBe(false);
+  expect(renames(calls)).toHaveLength(0);
+});
+
+test("a pane placeable only by hash still gets its tab labelled", () => {
+  const { run, calls } = fakeHerdr([
+    [is("workspace", "list"), reply("workspace_list", {
+      workspaces: [{ workspace_id: "w5", tokens: { orbit_wtkey: sessionKey("/wt/x") } }],
+    })],
+    [is("pane", "list"), reply("pane_list", {
+      panes: [{ pane_id: "w5:p1", tab_id: "w5:t0", workspace_id: "w5", tokens: { orbit_role: "diff" } }],
+    })],
+  ]);
+  expect(createHerdrBackend({ run, env: IN_HERDR }).labelReviewTab("/wt/x", "review EV11")).toBe(true);
+  expect(renames(calls)[0]).toContain("w5:t0");
+});
+
+// herdr documents the `tab.rename` method but not the CLI's argument shape, so
+// the backend tries `--label` and falls back to a positional. Both forms have to
+// work, and the fallback must not fire when the first one succeeded.
+test("the rename falls back to a positional new-name when --label is rejected", () => {
+  const { run, calls } = fakeHerdr([
+    [is("workspace", "list"), reply("workspace_list", {
+      workspaces: [{ workspace_id: "w5", tokens: { orbit_wt: "/wt/x" } }],
+    })],
+    [is("pane", "list"), reply("pane_list", {
+      panes: [{ pane_id: "w5:p1", tab_id: "w5:t0", workspace_id: "w5", tokens: { orbit_role: "diff" } }],
+    })],
+    [(a) => is("tab", "rename")(a) && a.includes("--label"), "", 2],
+  ]);
+  expect(createHerdrBackend({ run, env: IN_HERDR }).labelReviewTab("/wt/x", "review EV11")).toBe(true);
+  expect(renames(calls)).toHaveLength(2);
+  expect(renames(calls)[1]).toEqual(["tab", "rename", "w5:t0", "review EV11"]);
+});
+
+test("only one rename call when the --label form is accepted", () => {
+  const { run, calls } = REVIEW_WORLD();
+  createHerdrBackend({ run, env: IN_HERDR }).labelReviewTab("/wt/x", "review EV11");
+  expect(renames(calls)).toHaveLength(1);
+});
+
+// `workspace create` labels the WORKSPACE; its first tab gets no label at all,
+// so the review tab is the one we always have to name afterwards. Two ways to
+// find it, because herdr's docs don't say whether the create reply carries a
+// tab id: use it when it's there, otherwise look the tab up from the diff pane
+// we just tagged.
+
+test("building a review names its first tab from the create reply's tab id", () => {
+  const { run, calls } = fakeHerdr([
+    [is("workspace", "create"), reply("workspace_create", { workspace_id: "w5", pane_id: "w5:p1", tab_id: "w5:t0" })],
+    [is("tab", "create"), reply("tab_create", { tab_id: "w5:t1", pane_id: "w5:t1p" })],
+    [(a) => a[1] === "split", reply("pane_split", { pane_id: "w5:s1" })],
+  ]);
+  createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({
+    worktreePath: "/wt/x",
+    reviewTabLabel: "review EV11",
+  });
+  expect(renames(calls)).toHaveLength(1);
+  expect(renames(calls)[0]).toContain("w5:t0");
+  expect(renames(calls)[0]).toContain("review EV11");
+  // No lookup needed when the reply told us the tab outright.
+  expect(calls.some((c) => is("pane", "list")(c))).toBe(false);
+});
+
+test("a create reply without a tab id falls back to finding the diff pane's tab", () => {
+  const { run, calls } = fakeHerdr([
+    [is("workspace", "create"), reply("workspace_create", { workspace_id: "w5", pane_id: "w5:p1" })],
+    [is("tab", "create"), reply("tab_create", { tab_id: "w5:t1", pane_id: "w5:t1p" })],
+    [(a) => a[1] === "split", reply("pane_split", { pane_id: "w5:s1" })],
+    [is("workspace", "list"), reply("workspace_list", {
+      workspaces: [{ workspace_id: "w5", tokens: { orbit_wt: "/wt/x" } }],
+    })],
+    [is("pane", "list"), reply("pane_list", {
+      panes: [{ pane_id: "w5:p1", tab_id: "w5:t0", workspace_id: "w5", tokens: { orbit_role: "diff" } }],
+    })],
+  ]);
+  createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({ worktreePath: "/wt/x" });
+  // Unlabelled builds still name the tab "review" rather than leaving herdr's
+  // default on it — the env instance is appended later, by env-report.
+  expect(renames(calls)).toHaveLength(1);
+  expect(renames(calls)[0]).toEqual(["tab", "rename", "w5:t0", "--label", "review"]);
+});

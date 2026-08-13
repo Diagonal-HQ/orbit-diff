@@ -26,7 +26,7 @@ import {
   openPlainWindow,
   buildReviewWindow,
 } from "./mux.mjs";
-import { sessionKey, sessionPath, writeSession, updateSession, deleteSession, listSessions, sessionForWorktree } from "./session.mjs";
+import { sessionKey, sessionPath, writeSession, updateSession, deleteSession, listSessions, sessionForWorktree, reviewTabLabel } from "./session.mjs";
 import { createAgentPoller } from "./agent-state.mjs";
 import { spawnWatchdog } from "./watchdog.mjs";
 
@@ -293,6 +293,10 @@ export async function runPrManager() {
     const built = buildReviewWindow({
       worktreePath: wtPath,
       name: windowName({ path: wtPath, branch: target.headRefName }),
+      // Usually just "review" — but a rebuild of a worktree whose environment is
+      // already up gets its instance back straight away, rather than waiting for
+      // an `env-report` that already happened and won't happen again.
+      reviewTabLabel: reviewTabLabel(sessionForWorktree(wtPath)),
       setupCmd,
       claudeCmd,
       codexCmd,

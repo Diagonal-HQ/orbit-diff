@@ -36,6 +36,7 @@ const NONE = {
   paneAlive: () => false,
   openPlainWindow: () => ({ ok: false, error: "no multiplexer — start herdr" }),
   buildReviewWindow: () => ({ error: "no multiplexer — start herdr to open a review window" }),
+  labelReviewTab: () => false,
   nativeAgentStates: null,
 };
 
@@ -85,6 +86,11 @@ export const capturePane = (pane) => activeMux().capturePane(pane);
 export const paneAlive = (pane) => activeMux().paneAlive(pane);
 export const openPlainWindow = (path, label) => activeMux().openPlainWindow(path, label);
 export const buildReviewWindow = (opts) => activeMux().buildReviewWindow(opts);
+
+// Put `label` on a worktree's review tab — how the provisioned env instance
+// stays readable from every tab of the review. Best-effort: false when there's
+// no multiplexer, no open review, or nothing to rename.
+export const labelReviewTab = (path, label) => activeMux().labelReviewTab(path, label);
 
 // Close whatever window is holding `path`, whether or not we're inside herdr.
 // Returns the closed window's id, or null if nothing was holding it.

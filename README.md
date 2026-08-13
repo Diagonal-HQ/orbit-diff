@@ -308,6 +308,13 @@ tabbing between them. Everything else gets a whole tab: a diff wants the width,
 build output scrolls. That's the only split, and slicing tab 1 into thirds as
 well only made all three of its occupants worse.
 
+**The provisioned environment is on tab 1.** When your setup script calls
+`orbit-diff env-report 11`, that tab is renamed `review EV11` — so the instance
+is readable from the agents and setup tabs too, not just from the viewer. It's
+also in the viewer's status bar (`L120/540 · EV11 · ▸diff · …`), which is what
+you get when a worktree has no PR: the `O` overview needs one to open, and its
+Env block used to be the only place the instance appeared.
+
 There's no `orbit-diff pr-status` panel: the viewer's `O` overview covers the
 same ground with room to render it, and the provisioned environment appears at
 the top of that view's sidebar.

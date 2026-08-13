@@ -20,7 +20,7 @@ import { openUrl } from "./platform.mjs";
 import { detectPR, submitAnnotations, approvePR, requestChanges, currentUser } from "./github.mjs";
 import { PrOverview, overviewLayout, HEAD_ROWS } from "./PrOverview.jsx";
 import { overviewRows, overviewViewport } from "./pr-overview.mjs";
-import { sessionForWorktree } from "./session.mjs";
+import { sessionForWorktree, envTag } from "./session.mjs";
 import { findingToAnnotation, reserveFindingIds } from "./ai/findings.mjs";
 import {
   makeAnnotation,
@@ -122,8 +122,8 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
   // Our own GitHub login, so the overview can say "waiting on YOU" rather than
   // making you scan the reviewer list. Best-effort and cached for the session.
   const [me, setMe] = useState(null);
-  // This worktree's session record, for the overview's Env block. Re-read each
-  // time the overview opens or refreshes rather than cached at mount, because
+  // This worktree's session record — the overview's Env block, and the instance
+  // tag in the status bar. Polled rather than cached at mount, because
   // `orbit-diff env-report` usually lands well after the viewer is up.
   const [env, setEnv] = useState(null);
 
@@ -633,6 +633,25 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
     return () => {
       live = false;
     };
+  }, []);
+
+  // Watch this worktree's session record so the status bar can show the
+  // provisioned instance the moment `env-report` records it.
+  //
+  // A poll rather than a watch: the record is written by a different process
+  // (the setup script's `orbit-diff env-report`), it's one small file read every
+  // few seconds, and it lands exactly once per review. Re-rendering the whole
+  // TUI on each tick would be the expensive part, so state only moves when
+  // something the UI actually draws has changed.
+  useEffect(() => {
+    const shown = (s) => [envTag(s), (s && s.envUrl) || "", (s && s.status) || "", (s && s.error) || ""].join("|");
+    const tick = () => {
+      const sess = readSession();
+      setEnv((prev) => (shown(prev) === shown(sess) ? prev : sess));
+    };
+    tick();
+    const id = setInterval(tick, 4000);
+    return () => clearInterval(id);
   }, []);
 
   // How far the overview can scroll, measured the same way it renders.
@@ -1359,6 +1378,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
           line={cursor + 1}
           lineTotal={total}
           annCount={annotations.length}
+          envLabel={envTag(env)}
           hasPr={!!pr}
           reviewCount={findings.length}
           fileCount={files.length}
@@ -1470,6 +1490,7 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
         line={cursor + 1}
         lineTotal={total}
         annCount={annotations.length}
+        envLabel={envTag(env)}
         hasPr={!!pr}
         reviewCount={findings.length}
         fileCount={files.length}
@@ -1485,8 +1506,14 @@ export function App({ files: initialFiles, reloadDiff, source, handoff, claudePa
 function StatusBar({
   mode, source, fileQuery, lineQuery, scope, matches, matchIdx, focus, section,
   line, lineTotal, annCount, reviewCount, fileCount, commentTarget, selectionRange, askShowHistory, toast,
-  hasPr = false,
+  hasPr = false, envLabel = "",
 }) {
+  // The provisioned environment, e.g. "EV11". Shown in the two bars you actually
+  // sit in — the diff and the overview — because a worktree with no PR never
+  // opens the overview, and its Env block was the only place this used to
+  // appear. herdr's tab label carries it too; this is what's left when the
+  // viewer is running outside herdr.
+  const envSeg = envLabel ? <><Text color="green">{envLabel}</Text><Dim> · </Dim></> : null;
   if (mode === "files") {
     return <Bar><Text color="cyan">filter files</Text> <Text>{fileQuery}</Text><Text inverse> </Text><Dim> · enter to apply · esc to clear</Dim></Bar>;
   }
@@ -1506,7 +1533,8 @@ function StatusBar({
     return (
       <Bar>
         <Text color="cyan">PR overview</Text>
-        <Dim> · ↑↓/jk scroll · ^u/^d page · t/b ends · </Dim>
+        <Dim> · </Dim>{envSeg}
+        <Dim>↑↓/jk scroll · ^u/^d page · t/b ends · </Dim>
         <Text color="magenta">g</Text><Dim> review · </Dim>
         <Text color="green">p</Text><Dim> PR · </Dim>
         <Text color="green">o</Text><Dim> env · </Dim>
@@ -1545,6 +1573,7 @@ function StatusBar({
   return (
     <Bar>
       <Text color="cyan">L{line}</Text><Dim>/{lineTotal} · </Dim>
+      {envSeg}
       {ann}
       <Dim>{where} · </Dim>
       {inReview ? (

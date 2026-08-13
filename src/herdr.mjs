@@ -495,6 +495,42 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     return { pane };
   }
 
+  // Relabel an existing tab.
+  //
+  // herdr documents the method (`tab.rename`) but not the CLI's argument shape,
+  // and the two plausible forms are a `--label` flag (matching `tab create`) and
+  // a bare positional (matching `pane run <id> <cmd>`). So try the flag and fall
+  // back to the positional — the same discover-rather-than-guess approach the
+  // rest of this module takes, and it costs one extra call only when the first
+  // form is the wrong one. A tab that won't rename is cosmetic, never fatal.
+  const renameTab = (tab, label) => {
+    if (!tab || !label) return false;
+    return ok(["tab", "rename", tab, "--label", label]) || ok(["tab", "rename", tab, label]);
+  };
+
+  // The tab holding this worktree's diff pane, or "". Matches on path or hash,
+  // exactly as `findWindowByWorktree` does.
+  const findReviewTab = (worktreePath) => {
+    const key = sessionKey(worktreePath);
+    for (const p of listTaggedPanes()) {
+      if (p.role !== "diff") continue;
+      if (p.worktreePath === worktreePath || (p.worktreeKey && p.worktreeKey === key)) return p.tab;
+    }
+    return "";
+  };
+
+  // Put `label` on the review tab of the worktree at `worktreePath`.
+  //
+  // This is how the provisioned environment stays visible: the tab bar is on
+  // screen from every tab of the workspace, so the instance is readable from the
+  // agents or setup tab too — where neither the viewer's status bar nor its `O`
+  // overview can reach. `orbit-diff env-report` calls it when the instance lands,
+  // which is well after the review was built.
+  //
+  // Best-effort by construction: a review that isn't open, a tab we can't place,
+  // or a herdr that won't rename all answer false and change nothing.
+  const labelReviewTab = (worktreePath, label) => renameTab(findReviewTab(worktreePath), label);
+
   // Put the view back if building a review workspace moved it.
   //
   // herdr's docs say creation and splitting "leave focus unchanged", and we pass
@@ -546,7 +582,7 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
   // worktree with it.
   //
   // Nothing here focuses anything (see restoreFocus above).
-  const buildReviewSpace = ({ worktreePath, name, setupCmd, diffCmd, claudeCmd, codexCmd }) => {
+  const buildReviewSpace = ({ worktreePath, name, reviewTabLabel, setupCmd, diffCmd, claudeCmd, codexCmd }) => {
     const created = run([
       "workspace", "create", "--cwd", worktreePath, "--label", name || "review", "--no-focus",
     ]);
@@ -561,10 +597,14 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     // can always close it.
     tagWorkspace(window, worktreePath);
 
-    // The workspace's own first tab is the diff.
+    // The workspace's own first tab is the diff. `workspace create` takes a
+    // label for the workspace but none for that tab, so it's the one tab we have
+    // to name afterwards — which is also where the env instance goes once
+    // `env-report` lands. See labelReviewTab.
     const diffPane = idFrom(created.stdout, ["pane_id"]) || firstPaneOf(window, null);
     if (!diffPane) return { error: "couldn't parse the herdr pane id", window };
     tag(diffPane, "diff", worktreePath);
+    renameTab(idFrom(created.stdout, ["tab_id"]) || findReviewTab(worktreePath), reviewTabLabel || "review");
 
     const panes = { diff: diffPane };
 
@@ -628,6 +668,7 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
     paneAlive,
     openPlainWindow,
     buildReviewWindow,
+    labelReviewTab,
     nativeAgentStates,
   };
 }
@@ -646,4 +687,5 @@ export const capturePane = backend.capturePane;
 export const paneAlive = backend.paneAlive;
 export const openPlainWindow = backend.openPlainWindow;
 export const buildReviewWindow = backend.buildReviewWindow;
+export const labelReviewTab = backend.labelReviewTab;
 export const nativeAgentStates = backend.nativeAgentStates;

@@ -56,7 +56,8 @@ if (args[0] === "pr-status") {
 // this worktree's review session and stop the "provisioning" spinner.
 if (args[0] === "env-report") {
   const { repoRoot } = await import("./src/paths.mjs");
-  const { sessionKey, readSession, updateSession } = await import("./src/session.mjs");
+  const { sessionKey, readSession, updateSession, reviewTabLabel } = await import("./src/session.mjs");
+  const { labelReviewTab } = await import("./src/mux.mjs");
   const rest = args.slice(1);
   const patch = { status: "ready" };
   let positional = null;
@@ -75,6 +76,11 @@ if (args[0] === "env-report") {
   // Upsert so an early/manual call still records the worktree path.
   if (!readSession(key)) updateSession(key, { worktreePath: root });
   const rec = updateSession(key, { ...patch, worktreePath: root });
+  // Put the instance on the review tab, so it's readable from every tab of the
+  // review rather than only from the viewer. Best-effort: silent when this
+  // worktree has no open review, or when we're not inside herdr at all (setup
+  // scripts get run by hand from a plain shell often enough).
+  labelReviewTab(root, reviewTabLabel(rec));
   const inst = rec.envInstance != null ? ` → instance ${rec.envInstance}` : "";
   console.log(`orbit-diff: recorded env for ${root}${inst} (status: ${rec.status})`);
   process.exit(0);

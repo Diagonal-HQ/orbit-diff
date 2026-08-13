@@ -99,3 +99,21 @@ export function listSessions() {
 export function sessionForWorktree(worktreePath) {
   return readSession(sessionKey(worktreePath));
 }
+
+// "EV11", or "" when this worktree has no environment recorded (yet).
+//
+// The instance is only meaningful once `env-report` says the environment is
+// ready — a record still provisioning has nothing to show, and one that failed
+// shouldn't advertise an instance you can't reach.
+export function envTag(session) {
+  const ready = session && session.status === "ready" && session.envInstance != null;
+  return ready ? `EV${session.envInstance}` : "";
+}
+
+// The review tab's herdr label: "review", or "review EV11" once the environment
+// is up. The tab bar is the only surface visible from every tab of a review, so
+// this is where the instance goes — see labelReviewTab in herdr.mjs.
+export function reviewTabLabel(session) {
+  const tag = envTag(session);
+  return tag ? `review ${tag}` : "review";
+}
