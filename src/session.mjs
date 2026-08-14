@@ -110,10 +110,11 @@ export function envTag(session) {
   return ready ? `EV${session.envInstance}` : "";
 }
 
-// The review tab's herdr label: "review", or "review EV11" once the environment
-// is up. The tab bar is the only surface visible from every tab of a review, so
-// this is where the instance goes — see labelReviewTab in herdr.mjs.
+// The review tab's herdr label: "review" while provisioning, then just "EV11"
+// once the environment is up. The tab bar is the only surface visible from every
+// tab of a review, so this is where the instance goes — see labelReviewTab in
+// herdr.mjs.
 export function reviewTabLabel(session) {
   const tag = envTag(session);
-  return tag ? `review ${tag}` : "review";
+  return tag || "review";
 }

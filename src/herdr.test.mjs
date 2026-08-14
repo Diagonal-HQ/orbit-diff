@@ -626,15 +626,14 @@ const renames = (calls) => calls.filter((c) => is("tab", "rename")(c));
 
 test("labelReviewTab renames the tab holding the diff pane, not the agents tab", () => {
   const { run, calls } = REVIEW_WORLD();
-  expect(createHerdrBackend({ run, env: IN_HERDR }).labelReviewTab("/wt/x", "review EV11")).toBe(true);
+  expect(createHerdrBackend({ run, env: IN_HERDR }).labelReviewTab("/wt/x", "EV11")).toBe(true);
   expect(renames(calls)).toHaveLength(1);
-  expect(renames(calls)[0]).toContain("w5:t0");
-  expect(renames(calls)[0]).toContain("review EV11");
+  expect(renames(calls)[0]).toEqual(["tab", "rename", "w5:t0", "EV11"]);
 });
 
 test("a worktree with no open review is a silent no-op, not an error", () => {
   const { run, calls } = REVIEW_WORLD();
-  expect(createHerdrBackend({ run, env: IN_HERDR }).labelReviewTab("/wt/nothing-here", "review EV11")).toBe(false);
+  expect(createHerdrBackend({ run, env: IN_HERDR }).labelReviewTab("/wt/nothing-here", "EV11")).toBe(false);
   expect(renames(calls)).toHaveLength(0);
 });
 
@@ -647,32 +646,15 @@ test("a pane placeable only by hash still gets its tab labelled", () => {
       panes: [{ pane_id: "w5:p1", tab_id: "w5:t0", workspace_id: "w5", tokens: { orbit_role: "diff" } }],
     })],
   ]);
-  expect(createHerdrBackend({ run, env: IN_HERDR }).labelReviewTab("/wt/x", "review EV11")).toBe(true);
+  expect(createHerdrBackend({ run, env: IN_HERDR }).labelReviewTab("/wt/x", "EV11")).toBe(true);
   expect(renames(calls)[0]).toContain("w5:t0");
 });
 
-// herdr documents the `tab.rename` method but not the CLI's argument shape, so
-// the backend tries `--label` and falls back to a positional. Both forms have to
-// work, and the fallback must not fire when the first one succeeded.
-test("the rename falls back to a positional new-name when --label is rejected", () => {
-  const { run, calls } = fakeHerdr([
-    [is("workspace", "list"), reply("workspace_list", {
-      workspaces: [{ workspace_id: "w5", tokens: { orbit_wt: "/wt/x" } }],
-    })],
-    [is("pane", "list"), reply("pane_list", {
-      panes: [{ pane_id: "w5:p1", tab_id: "w5:t0", workspace_id: "w5", tokens: { orbit_role: "diff" } }],
-    })],
-    [(a) => is("tab", "rename")(a) && a.includes("--label"), "", 2],
-  ]);
-  expect(createHerdrBackend({ run, env: IN_HERDR }).labelReviewTab("/wt/x", "review EV11")).toBe(true);
-  expect(renames(calls)).toHaveLength(2);
-  expect(renames(calls)[1]).toEqual(["tab", "rename", "w5:t0", "review EV11"]);
-});
-
-test("only one rename call when the --label form is accepted", () => {
+test("tab rename uses herdr's positional label argument", () => {
   const { run, calls } = REVIEW_WORLD();
-  createHerdrBackend({ run, env: IN_HERDR }).labelReviewTab("/wt/x", "review EV11");
+  createHerdrBackend({ run, env: IN_HERDR }).labelReviewTab("/wt/x", "EV11");
   expect(renames(calls)).toHaveLength(1);
+  expect(renames(calls)[0]).toEqual(["tab", "rename", "w5:t0", "EV11"]);
 });
 
 // `workspace create` labels the WORKSPACE; its first tab gets no label at all,
@@ -689,11 +671,10 @@ test("building a review names its first tab from the create reply's tab id", () 
   ]);
   createHerdrBackend({ run, env: IN_HERDR }).buildReviewWindow({
     worktreePath: "/wt/x",
-    reviewTabLabel: "review EV11",
+    reviewTabLabel: "EV11",
   });
   expect(renames(calls)).toHaveLength(1);
-  expect(renames(calls)[0]).toContain("w5:t0");
-  expect(renames(calls)[0]).toContain("review EV11");
+  expect(renames(calls)[0]).toEqual(["tab", "rename", "w5:t0", "EV11"]);
   // No lookup needed when the reply told us the tab outright.
   expect(calls.some((c) => is("pane", "list")(c))).toBe(false);
 });
@@ -714,5 +695,5 @@ test("a create reply without a tab id falls back to finding the diff pane's tab"
   // Unlabelled builds still name the tab "review" rather than leaving herdr's
   // default on it — the env instance is appended later, by env-report.
   expect(renames(calls)).toHaveLength(1);
-  expect(renames(calls)[0]).toEqual(["tab", "rename", "w5:t0", "--label", "review"]);
+  expect(renames(calls)[0]).toEqual(["tab", "rename", "w5:t0", "review"]);
 });

@@ -309,7 +309,7 @@ build output scrolls. That's the only split, and slicing tab 1 into thirds as
 well only made all three of its occupants worse.
 
 **The provisioned environment is on tab 1.** When your setup script calls
-`orbit-diff env-report 11`, that tab is renamed `review EV11` — so the instance
+`orbit-diff env-report 11`, that tab is renamed `EV11` — so the instance
 is readable from the agents and setup tabs too, not just from the viewer. It's
 also in the viewer's status bar (`L120/540 · EV11 · ▸diff · …`), which is what
 you get when a worktree has no PR: the `O` overview needs one to open, and its

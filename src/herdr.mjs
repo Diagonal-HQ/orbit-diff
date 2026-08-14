@@ -525,15 +525,12 @@ export function createHerdrBackend({ run = defaultRun, env = process.env, resolv
 
   // Relabel an existing tab.
   //
-  // herdr documents the method (`tab.rename`) but not the CLI's argument shape,
-  // and the two plausible forms are a `--label` flag (matching `tab create`) and
-  // a bare positional (matching `pane run <id> <cmd>`). So try the flag and fall
-  // back to the positional — the same discover-rather-than-guess approach the
-  // rest of this module takes, and it costs one extra call only when the first
-  // form is the wrong one. A tab that won't rename is cosmetic, never fatal.
+  // `herdr tab rename` takes the label positionally. Passing `--label` does not
+  // fail: herdr treats it as the first word of the label, producing tab names
+  // like "--label review EV11". A tab that won't rename is cosmetic, never fatal.
   const renameTab = (tab, label) => {
     if (!tab || !label) return false;
-    return ok(["tab", "rename", tab, "--label", label]) || ok(["tab", "rename", tab, label]);
+    return ok(["tab", "rename", tab, label]);
   };
 
   // The tab holding this worktree's diff pane, or "". Matches on path or hash,

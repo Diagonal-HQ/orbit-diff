@@ -8,7 +8,7 @@ import { envTag, reviewTabLabel } from "./session.mjs";
 
 test("a ready environment gets a tag", () => {
   expect(envTag({ status: "ready", envInstance: "11" })).toBe("EV11");
-  expect(reviewTabLabel({ status: "ready", envInstance: "11" })).toBe("review EV11");
+  expect(reviewTabLabel({ status: "ready", envInstance: "11" })).toBe("EV11");
 });
 
 test("instance 0 is an instance, not a missing one", () => {
